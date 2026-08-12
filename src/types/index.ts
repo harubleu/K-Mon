@@ -1,31 +1,63 @@
 // src/types/index.ts
+// --- フェーズ定義 ---
+export type GamePhase = 'start' | 'draw' | 'main' | 'end';
 
-export type ManaColor = 'red' | 'blue' | 'yellow' | 'green' | 'white' | 'orange' | 'sun' | 'moon';
+// --- 基本型 ---
+export type ManaColor =
+  | 'red'
+  | 'blue'
+  | 'yellow'
+  | 'green'
+  | 'white'
+  | 'orange'
+  | 'sun'
+  | 'moon';
 
+// --- マナカード ---
 export interface ManaCard {
   id: string;
-  color: ManaColor;
+  hexColor: string; // 個別のUI描画用HEXカラーコード
+  kanji: string; // マナの漢字
+  reading: string; // マナの読み
+  imageUrl?: string;
 }
 
+// --- モンスターカード ---
 export interface MonsterCard {
   id: string;
   name: string;
-  slots: ManaColor[];
+  slots: string[]; // スロット（装備に必要な漢字/部首の配列）
   equippedMana: ManaCard[];
   isFlipped: boolean;
+  imageUrl?: string;
+  flippedImageUrl?: string;
 }
 
 // --- プレイヤー状態 (State) ---
-  export interface PlayerState {
+export interface PlayerState {
   deck: ManaCard[];
   cemetery: ManaCard[];
-  exile: ManaCard[]; 
+  exile: ManaCard[];
   monsters: MonsterCard[];
+  pendingDrawCards: ManaCard[];
 }
 
+// --- ゲーム全体状態 (Root State)（ターン管理を追加） ---
 export interface GameState {
   player: PlayerState;
   opponent: PlayerState;
+  // 以下、フェーズ2用の進行管理状態を追加
+  turnPlayer: PlayerSide;
+  turnCount: number;
+  currentPhase: GamePhase;
+}
+
+// --- デッキ構築・プリセット用 ---
+export interface PresetDeck {
+  id: string;
+  name: string;
+  monsterIds: string[]; // 3体のモンスターID
+  manaCounts: Record<string, number>; // 漢字ごとのマナ枚数
 }
 
 // --- Action Payload インターフェース ---
@@ -34,8 +66,7 @@ export interface GameState {
 export type PlayerSide = 'player' | 'opponent';
 
 // 領域の識別子
-export type ZoneType = 'deck' | 'cemetery' | 'exile';
-
+export type ZoneType = 'deck' | 'cemetery' | 'exile' | 'pending';
 
 // 1. マナ装備: 山札先頭からカードを取り出し、指定したモンスターに装備
 export type EquipManaAction = {
@@ -57,7 +88,11 @@ export type TrashManaAction = {
 // 3. ダメージ: 相手の山札から指定枚数を相手の墓地に追加
 export type DamageAction = {
   type: 'DAMAGE';
-  payload: { targetSide?: 'opponent' | 'player'; side?: PlayerSide; amount: number };
+  payload: {
+    targetSide?: 'opponent' | 'player';
+    side?: PlayerSide;
+    amount: number;
+  };
 };
 
 // 4. 回復: 自分の墓地から指定カードを自分の山札に戻し、シャッフル
@@ -100,6 +135,21 @@ export type ShuffleDeckAction = {
   payload: { side: PlayerSide };
 };
 
+// --- 9. ゲーム初期化 ---
+export type SetInitialStateAction = {
+  type: 'SET_INITIAL_STATE';
+  payload: {
+    player: {
+      monsters: MonsterCard[];
+      deck: ManaCard[];
+    };
+    opponent: {
+      monsters: MonsterCard[];
+      deck: ManaCard[];
+    };
+  };
+};
+
 // --- ゲーム全体のGameActionユニオン型 ---
 export type GameAction =
   | EquipManaAction
@@ -109,4 +159,7 @@ export type GameAction =
   | FlipMonsterAction
   | EquipSpecificManaAction
   | MoveCardBetweenZonesAction
-  | ShuffleDeckAction;
+  | ShuffleDeckAction
+  | SetInitialStateAction
+  | { type: 'NEXT_PHASE' }
+  | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } };

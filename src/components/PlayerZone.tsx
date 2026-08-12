@@ -16,13 +16,24 @@ interface PlayerZoneProps {
     side: PlayerSide,
     monsterIndex: number,
     manaCardIds: 'all' | string[],
-    destination: 'cemetery' | 'exile'
+    destination: 'cemetery' | 'exile',
   ) => void;
   onFlipMonster: (side: PlayerSide, monsterIndex: number) => void;
   onRecover: (side: PlayerSide, manaIds: string[]) => void;
-  onMoveCards: (side: PlayerSide, cardIds: string[], sourceZone: ZoneType, toZone: ZoneType) => void; // 修正
-  onEquipSpecific: (side: PlayerSide, cardId: string, sourceZone: ZoneType, monsterIndex: number) => void; // 修正
+  onMoveCards: (
+    side: PlayerSide,
+    cardIds: string[],
+    sourceZone: ZoneType,
+    toZone: ZoneType,
+  ) => void; // 修正
+  onEquipSpecific: (
+    side: PlayerSide,
+    cardId: string,
+    sourceZone: ZoneType,
+    monsterIndex: number,
+  ) => void; // 修正
   onShuffleDeck: (side: PlayerSide) => void;
+  onDraw: (side: PlayerSide) => void;
 }
 
 export const PlayerZone: React.FC<PlayerZoneProps> = ({
@@ -36,11 +47,11 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   onMoveCards,
   onEquipSpecific,
   onShuffleDeck,
+  onDraw,
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false); // 山札モーダルの状態
-  const [isDrawModalOpen, setIsDrawModalOpen] = useState(false); // ドロー確認モーダルの開閉状態
 
   const topCemeteryCard = playerState.cemetery[playerState.cemetery.length - 1];
 
@@ -66,28 +77,49 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           borderRadius: '6px',
         }}
       >
-        <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>{label}山札</div>
+        <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+          {label}山札
+        </div>
         <div style={{ fontSize: '1.2rem', marginTop: '8px' }}>
           🎴 {playerState.deck.length}枚
         </div>
         {/* 山札操作ボタンエリアをフレックスボックスで縦並びに変更 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            marginTop: '8px',
+          }}
+        >
           <button
             onClick={() => setIsDeckModalOpen(true)}
-            style={{ fontSize: '0.75rem', padding: '4px 8px', cursor: 'pointer' }}
+            style={{
+              fontSize: '0.75rem',
+              padding: '4px 8px',
+              cursor: 'pointer',
+            }}
           >
             山札確認/操作
           </button>
           <button
             onClick={() => onShuffleDeck(side)}
-            style={{ fontSize: '0.75rem', padding: '4px 8px', cursor: 'pointer' }}
+            style={{
+              fontSize: '0.75rem',
+              padding: '4px 8px',
+              cursor: 'pointer',
+            }}
           >
             シャッフル
           </button>
           <button
-            onClick={() => setIsDrawModalOpen(true)}
+            onClick={() => onDraw(side)}
             disabled={playerState.deck.length === 0}
-            style={{ fontSize: '0.75rem', padding: '4px 8px', cursor: 'pointer' }}
+            style={{
+              fontSize: '0.75rem',
+              padding: '4px 8px',
+              cursor: 'pointer',
+            }}
           >
             1枚ドロー確認
           </button>
@@ -115,12 +147,14 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           borderRadius: '6px',
         }}
       >
-        <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>{label}墓地/除外</div>
+        <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+          {label}墓地/除外
+        </div>
         <div style={{ fontSize: '1.2rem', margin: '4px 0' }}>
           🪦 {playerState.cemetery.length} / 🌌 {playerState.exile.length}
         </div>
         <div style={{ minHeight: '30px', marginBottom: '6px' }}>
-          {topCemeteryCard && <Card card={topCemeteryCard} size="sm" />}
+          {topCemeteryCard && <Card card={topCemeteryCard} size='sm' />}
         </div>
         <button
           onClick={() => setIsCemeteryModalOpen(true)}
@@ -154,67 +188,121 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         onEquipSpecific={onEquipSpecific}
       />
 
-      {/* ドロー確認モーダル */}
-      {isDrawModalOpen && playerState.deck.length > 0 && (
-        <div 
+      {/* ドロー確認モーダル (pendingDrawCards の有無で制御) */}
+      {playerState.pendingDrawCards.length > 0 && (
+        <div
           style={{
-            position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
-            backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex',
-            justifyContent: 'center', alignItems: 'center', zIndex: 1000
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1000,
           }}
         >
-          <div style={{ backgroundColor: 'white', padding: '24px', borderRadius: '8px', minWidth: '300px' }}>
+          <div
+            style={{
+              backgroundColor: 'white',
+              padding: '24px',
+              borderRadius: '8px',
+              minWidth: '300px',
+            }}
+          >
             <h3 style={{ marginTop: 0 }}>1枚ドロー確認</h3>
-            
-            {/* 先頭カードの情報を表示 */}
-            <div style={{ marginBottom: '20px', fontSize: '1.2rem', textAlign: 'center', padding: '16px', border: '1px solid #ccc' }}>
-              カード色: <strong>{playerState.deck[0].color}</strong>
+
+            <div
+              style={{
+                marginBottom: '20px',
+                fontSize: '1.2rem',
+                textAlign: 'center',
+                padding: '16px',
+                border: '1px solid #ccc',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <span style={{ fontSize: '0.9rem', color: '#555' }}>
+                引いたマナ:
+              </span>
+              <Card card={playerState.pendingDrawCards[0]} />
             </div>
-            
-            <div style={{ fontSize: '0.9rem', marginBottom: '8px' }}>どのアクションを実行しますか？</div>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {/* 各モンスターへの装備ボタン */}
+
+            <div style={{ fontSize: '0.9rem', marginBottom: '8px' }}>
+              どのアクションを実行しますか？
+            </div>
+
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
+            >
               {playerState.monsters.map((monster, index) => (
                 <button
                   key={monster.id}
                   onClick={() => {
-                    onEquipSpecific(side, playerState.deck[0].id, 'deck', index);
-                    setIsDrawModalOpen(false);
+                    onEquipSpecific(
+                      side,
+                      playerState.pendingDrawCards[0].id,
+                      'pending', // sourceZone を pending に変更
+                      index,
+                    );
                   }}
                   style={{ padding: '8px', cursor: 'pointer' }}
                 >
                   {monster.name || `モンスター枠 ${index + 1}`} に装備
                 </button>
               ))}
-              
+
               <hr style={{ margin: '8px 0', width: '100%' }} />
-              
-              {/* 墓地 / 除外 への移動ボタン */}
+
               <button
                 onClick={() => {
-                  onMoveCards(side, [playerState.deck[0].id], 'deck', 'cemetery');
-                  setIsDrawModalOpen(false);
+                  onMoveCards(
+                    side,
+                    [playerState.pendingDrawCards[0].id],
+                    'pending', // sourceZone を pending に変更
+                    'cemetery',
+                  );
                 }}
                 style={{ padding: '8px', cursor: 'pointer' }}
               >
                 墓地に送る
               </button>
-              
+
               <button
                 onClick={() => {
-                  onMoveCards(side, [playerState.deck[0].id], 'deck', 'exile');
-                  setIsDrawModalOpen(false);
+                  onMoveCards(
+                    side,
+                    [playerState.pendingDrawCards[0].id],
+                    'pending', // sourceZone を pending に変更
+                    'exile',
+                  );
                 }}
                 style={{ padding: '8px', cursor: 'pointer' }}
               >
                 除外に送る
               </button>
-              
-              {/* キャンセルボタン (状態を変更せずに閉じる) */}
+
               <button
-                onClick={() => setIsDrawModalOpen(false)}
-                style={{ marginTop: '16px', padding: '8px', cursor: 'pointer', backgroundColor: '#eee', border: 'none' }}
+                onClick={() => {
+                  onMoveCards(
+                    side,
+                    [playerState.pendingDrawCards[0].id],
+                    'pending', // sourceZone を pending に変更
+                    'deck', // targetZone は deck (Reducer内で先頭に戻るよう処理)
+                  );
+                }}
+                style={{
+                  marginTop: '16px',
+                  padding: '8px',
+                  cursor: 'pointer',
+                  backgroundColor: '#eee',
+                  border: 'none',
+                }}
               >
                 キャンセル（山札の上に戻す）
               </button>

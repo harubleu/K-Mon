@@ -6,22 +6,21 @@ import type { GameState, GameAction, ManaCard } from '../types';
 const initialState: GameState = {
   player: {
     deck: [
-      { id: 'p-m1', color: 'red' },
-      { id: 'p-m2', color: 'blue' },
-      { id: 'p-m3', color: 'yellow' },
-      { id: 'p-m4', color: 'green' },
-      { id: 'p-m5', color: 'white' },
+      { id: 'p-m1', color: 'red' } as any, // ※マスターデータ完全移行までは既存のモック維持
+      { id: 'p-m2', color: 'blue' } as any,
+      { id: 'p-m3', color: 'yellow' } as any,
+      { id: 'p-m4', color: 'green' } as any,
+      { id: 'p-m5', color: 'white' } as any,
     ],
-    cemetery: [
-      { id: 'p-c1', color: 'sun' },
-    ],
+    cemetery: [{ id: 'p-c1', color: 'sun' } as any],
     exile: [],
+    pendingDrawCards: [],
     monsters: [
       {
         id: 'p-mon-1',
         name: '火炎竜',
         slots: ['red', 'red', 'white'],
-        equippedMana: [{ id: 'p-m6', color: 'red' }],
+        equippedMana: [{ id: 'p-m6', color: 'red' } as any],
         isFlipped: false,
       },
       {
@@ -42,12 +41,13 @@ const initialState: GameState = {
   },
   opponent: {
     deck: [
-      { id: 'o-m1', color: 'moon' },
-      { id: 'o-m2', color: 'red' },
-      { id: 'o-m3', color: 'blue' },
+      { id: 'o-m1', color: 'moon' } as any,
+      { id: 'o-m2', color: 'red' } as any,
+      { id: 'o-m3', color: 'blue' } as any,
     ],
     cemetery: [],
     exile: [],
+    pendingDrawCards: [],
     monsters: [
       {
         id: 'o-mon-1',
@@ -72,10 +72,14 @@ const initialState: GameState = {
       },
     ],
   },
+  // フェーズ2: ターン進行管理用の初期状態
+  turnPlayer: 'player',
+  turnCount: 1,
+  currentPhase: 'start',
 };
 
 // 配列を不変にシャッフルするヘルパー関数 (Fisher-Yates)
-const shuffleArray = <T,>(array: T[]): T[] => {
+const shuffleArray = <T>(array: T[]): T[] => {
   const result = [...array];
   for (let i = result.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -87,6 +91,71 @@ const shuffleArray = <T,>(array: T[]): T[] => {
 // Stateを更新する純粋関数 (ルールの自動チェックは行わない)
 const gameReducer = (state: GameState, action: GameAction): GameState => {
   switch (action.type) {
+    // ----------------------------------------------------
+    // フェーズ2 追加: ターン進行管理と自動ドロー処理の統合
+    // ----------------------------------------------------
+    case 'NEXT_PHASE': {
+      const { currentPhase, turnPlayer, turnCount } = state;
+
+      if (currentPhase === 'start') {
+        // start -> draw への移行時、ターンプレイヤーの山札から1枚引いてpendingDrawCardsへ移動する
+        const playerState = state[turnPlayer];
+
+        // 山札が0枚の場合はドローできない（フェーズのみ進める）
+        if (playerState.deck.length === 0) {
+          return { ...state, currentPhase: 'draw' };
+        }
+
+        const newDeck = [...playerState.deck];
+        const drawnCard = newDeck.shift()!; // 先頭から1枚ドロー
+        const newPending = [...playerState.pendingDrawCards, drawnCard];
+
+        return {
+          ...state,
+          currentPhase: 'draw',
+          [turnPlayer]: {
+            ...playerState,
+            deck: newDeck,
+            pendingDrawCards: newPending,
+          },
+        };
+      } else if (currentPhase === 'draw') {
+        return { ...state, currentPhase: 'main' };
+      } else if (currentPhase === 'main') {
+        return { ...state, currentPhase: 'end' };
+      } else if (currentPhase === 'end') {
+        // end -> start への移行時、ターンプレイヤーを交代し、ターン数を加算する
+        return {
+          ...state,
+          currentPhase: 'start',
+          turnPlayer: turnPlayer === 'player' ? 'opponent' : 'player',
+          turnCount: turnCount + 1,
+        };
+      }
+      return state;
+    }
+
+    // ----------------------------------------------------
+    // 既存の手動アクション
+    // ----------------------------------------------------
+    case 'AUTO_DRAW': {
+      // (※手動でのドロー用として既存ロジックを維持。UIからは削除予定ですが、テスト用に残します)
+      const targetSide = action.payload.player;
+      const player = state[targetSide];
+      if (player.deck.length === 0) return state;
+
+      const [drawnCard, ...remainingDeck] = player.deck;
+
+      return {
+        ...state,
+        [targetSide]: {
+          ...player,
+          deck: remainingDeck,
+          pendingDrawCards: [...player.pendingDrawCards, drawnCard],
+        },
+      };
+    }
+
     case 'EQUIP_MANA': {
       const { side, monsterIndex } = action.payload;
       const player = state[side];
@@ -94,11 +163,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       if (player.deck.length === 0) return state;
 
       const [drawnCard, ...remainingDeck] = player.deck;
-      
+
       const updatedMonsters = [...player.monsters];
       updatedMonsters[monsterIndex] = {
         ...updatedMonsters[monsterIndex],
-        equippedMana: [...updatedMonsters[monsterIndex].equippedMana, drawnCard]
+        equippedMana: [
+          ...updatedMonsters[monsterIndex].equippedMana,
+          drawnCard,
+        ],
       };
 
       return {
@@ -125,12 +197,19 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         trashedCards = [...monster.equippedMana];
         remainingMana = [];
       } else {
-        trashedCards = monster.equippedMana.filter(m => manaCardIds.includes(m.id));
-        remainingMana = monster.equippedMana.filter(m => !manaCardIds.includes(m.id));
+        trashedCards = monster.equippedMana.filter((m) =>
+          manaCardIds.includes(m.id),
+        );
+        remainingMana = monster.equippedMana.filter(
+          (m) => !manaCardIds.includes(m.id),
+        );
       }
 
       const updatedMonsters = [...player.monsters];
-      updatedMonsters[monsterIndex] = { ...monster, equippedMana: remainingMana };
+      updatedMonsters[monsterIndex] = {
+        ...monster,
+        equippedMana: remainingMana,
+      };
 
       return {
         ...state,
@@ -200,7 +279,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const updatedMonsters = [...player.monsters];
       updatedMonsters[monsterIndex] = {
         ...updatedMonsters[monsterIndex],
-        isFlipped: !updatedMonsters[monsterIndex].isFlipped
+        isFlipped: !updatedMonsters[monsterIndex].isFlipped,
       };
 
       return {
@@ -213,21 +292,24 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     }
 
     case 'EQUIP_SPECIFIC_MANA': {
-      // sourceZone にデフォルト値 'deck' を設定して undefined を排除
-      const { side, monsterIndex, sourceZone = 'deck', manaCardId } = action.payload;
+      const {
+        side,
+        monsterIndex,
+        sourceZone = 'deck',
+        manaCardId,
+      } = action.payload;
       const player = state[side];
-      
-      // 移動元の配列を安全に取得
-      const sourceArray = player[sourceZone] || [];
+
+      // 移動元の配列を安全に取得 (pending対応)
+      const sourceKey =
+        sourceZone === 'pending' ? 'pendingDrawCards' : sourceZone;
+      const sourceArray = player[sourceKey] || [];
       const cardToEquip = sourceArray.find((c) => c.id === manaCardId);
-      
-      // カードが見つからない場合は状態を変更しない
+
       if (!cardToEquip) return state;
 
-      // 移動元から対象カードを取り除く
       const updatedSourceArray = sourceArray.filter((c) => c.id !== manaCardId);
 
-      // 指定されたモンスターにマナを装備
       const updatedMonsters = player.monsters.map((monster, index) => {
         if (index !== monsterIndex) return monster;
         return {
@@ -240,35 +322,50 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ...state,
         [side]: {
           ...player,
-          [sourceZone]: updatedSourceArray,
+          [sourceKey]: updatedSourceArray,
           monsters: updatedMonsters,
         },
       };
     }
 
     case 'MOVE_CARD_BETWEEN_ZONES': {
-      const { side, cardIds, sourceZone = 'deck', targetZone = 'cemetery' } = action.payload;
+      const {
+        side,
+        cardIds,
+        sourceZone = 'deck',
+        targetZone = 'cemetery',
+      } = action.payload;
       const targetPlayer = state[side];
 
-      // 安全に配列を取得
-      const sourceList = targetPlayer[sourceZone] || [];
-      const targetList = targetPlayer[targetZone] || [];
+      // 安全に配列を取得 (pending対応)
+      const sourceKey =
+        sourceZone === 'pending' ? 'pendingDrawCards' : sourceZone;
+      const targetKey =
+        targetZone === 'pending' ? 'pendingDrawCards' : targetZone;
 
-      // 移動対象のカードを抽出
-      const movingCards = sourceList.filter((card) => cardIds.includes(card.id));
-      
-      // 移動元から対象カードを除外
-      const newSourceList = sourceList.filter((card) => !cardIds.includes(card.id));
-      
-      // 移動先にカードを追加
-      const newTargetList = [...targetList, ...movingCards];
+      const sourceList = targetPlayer[sourceKey] || [];
+      const targetList = targetPlayer[targetKey] || [];
+
+      const movingCards = sourceList.filter((card) =>
+        cardIds.includes(card.id),
+      );
+
+      const newSourceList = sourceList.filter(
+        (card) => !cardIds.includes(card.id),
+      );
+
+      // 移動先にカードを追加 (山札に戻す場合は先頭に追加)
+      const newTargetList =
+        targetZone === 'deck'
+          ? [...movingCards, ...targetList]
+          : [...targetList, ...movingCards];
 
       return {
         ...state,
         [side]: {
           ...targetPlayer,
-          [sourceZone]: newSourceList,
-          [targetZone]: newTargetList,
+          [sourceKey]: newSourceList,
+          [targetKey]: newTargetList,
         },
       };
     }
@@ -276,12 +373,28 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     case 'SHUFFLE_DECK': {
       const { side } = action.payload;
       const player = state[side];
-      
+
       return {
         ...state,
         [side]: {
           ...player,
           deck: shuffleArray(player.deck),
+        },
+      };
+    }
+
+    case 'SET_INITIAL_STATE': {
+      return {
+        ...state,
+        player: {
+          ...state.player,
+          monsters: action.payload.player.monsters,
+          deck: action.payload.player.deck,
+        },
+        opponent: {
+          ...state.opponent,
+          monsters: action.payload.opponent.monsters,
+          deck: action.payload.opponent.deck,
         },
       };
     }
