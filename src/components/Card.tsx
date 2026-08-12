@@ -1,7 +1,7 @@
 // src/components/Card.tsx
 
 import React from 'react';
-import type { ManaCard, ManaColor } from '../types';
+import type { ManaCard } from '../types';
 
 interface CardProps {
   card: ManaCard;
