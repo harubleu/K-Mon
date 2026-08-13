@@ -399,6 +399,13 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       };
     }
 
+    case 'SET_TURN_PLAYER': {
+      return {
+        ...state,
+        turnPlayer: action.payload.turnPlayer,
+      };
+    }
+
     default:
       return state;
   }

@@ -5,12 +5,17 @@ import { useGameState } from './hooks/useGameState';
 import { PlayerZone } from './components/PlayerZone';
 import { ActionArea } from './components/ActionArea';
 import { DeckBuilder } from './components/DeckBuilder/DeckBuilder';
+import { JankenModal } from './components/GameBoard/JankenModal';
 import type { PlayerSide, ZoneType, MonsterCard, ManaCard } from './types'; // 必要な型を追加
 
 export const App: React.FC = () => {
   const { gameState, dispatch } = useGameState();
   // 画面の切り替え状態を管理 (true: デッキ構築画面, false: 対戦画面)
   const [isBuildingDeck, setIsBuildingDeck] = useState(true);
+  const [isJankenModalOpen, setIsJankenModalOpen] = useState(false);
+  const [jankenPurpose, setJankenPurpose] = useState<'start' | 'battle'>(
+    'start',
+  );
 
   // デッキ構築完了時のハンドラー
   const handleStartGame = (
@@ -27,6 +32,49 @@ export const App: React.FC = () => {
       },
     });
     setIsBuildingDeck(false);
+    setJankenPurpose('start');
+    setIsJankenModalOpen(true);
+  };
+
+  const handleJankenComplete = (firstPlayer?: PlayerSide) => {
+    // start目的で、かつ結果がある場合のみターンプレイヤーをセット
+    if (jankenPurpose === 'start' && firstPlayer) {
+      dispatch({
+        type: 'SET_TURN_PLAYER',
+        payload: { turnPlayer: firstPlayer },
+      });
+    }
+    setIsJankenModalOpen(false);
+  };
+
+  // 追加: バトル用じゃんけんモーダルを閉じる
+  const handleJankenClose = () => {
+    setIsJankenModalOpen(false);
+  };
+
+  // 追加: メインフェーズからのじゃんけん呼び出し
+  const handleBattleJanken = () => {
+    setJankenPurpose('battle');
+    setIsJankenModalOpen(true);
+  };
+
+  const handleDeckMill = (targetSide: PlayerSide, count: number) => {
+    const targetDeck = gameState[targetSide].deck;
+    if (targetDeck.length === 0) return;
+
+    // 山札の上（先頭）から指定枚数分のカードIDを取得
+    const cardsToMove = targetDeck.slice(0, count).map((card) => card.id);
+
+    // 既存の領域移動アクションを再利用して墓地へ送る
+    dispatch({
+      type: 'MOVE_CARD_BETWEEN_ZONES',
+      payload: {
+        side: targetSide,
+        cardIds: cardsToMove,
+        sourceZone: 'deck',
+        targetZone: 'cemetery',
+      },
+    });
   };
 
   // --- 手動アクションのハンドラー群 ---
@@ -141,8 +189,16 @@ export const App: React.FC = () => {
           marginBottom: '16px',
         }}
       >
-        カンジモンスターズ 特訓用Webアプリ (フェーズ1: 手動操作サンドボックス)
+        カンジモンスターズ 特訓用Webアプリ
       </h1>
+
+      {/* じゃんけんモーダル */}
+      <JankenModal
+        isOpen={isJankenModalOpen}
+        purpose={jankenPurpose} // 追加
+        onComplete={handleJankenComplete}
+        onClose={handleJankenClose} // 追加
+      />
 
       {/* [上段] Opponent (相手) エリア */}
       <PlayerZone
@@ -165,8 +221,9 @@ export const App: React.FC = () => {
         turnCount={gameState.turnCount}
         currentPhase={gameState.currentPhase}
         onNextPhase={handleNextPhase}
-        onAutoDraw={handleAutoDraw}
         onDamage={handleDamage}
+        onJanken={handleBattleJanken} // 追加
+        onDeckMill={handleDeckMill} // 追加
       />
 
       {/* [下段] Player (自分) エリア */}

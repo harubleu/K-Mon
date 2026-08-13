@@ -162,4 +162,5 @@ export type GameAction =
   | ShuffleDeckAction
   | SetInitialStateAction
   | { type: 'NEXT_PHASE' }
-  | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } };
+  | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
+  | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } };

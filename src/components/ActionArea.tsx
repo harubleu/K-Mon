@@ -6,8 +6,10 @@ interface ActionAreaProps {
   turnCount: number;
   currentPhase: GamePhase;
   onNextPhase: () => void;
-  onAutoDraw: (player: PlayerSide) => void;
   onDamage: (amount: number) => void;
+  onRecover?: (side: PlayerSide, manaIds: string[]) => void;
+  onJanken?: () => void;
+  onDeckMill?: (side: PlayerSide, count: number) => void;
 }
 
 export const ActionArea: React.FC<ActionAreaProps> = ({
@@ -16,8 +18,12 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
   currentPhase,
   onNextPhase,
   onDamage,
+  onJanken,
+  onDeckMill,
 }) => {
   const [damageAmount, setDamageAmount] = useState<number>(1);
+  const [millCount, setMillCount] = useState<number>(1); // 山札削り枚数
+  const [millTarget, setMillTarget] = useState<PlayerSide>('opponent'); // 山札削り対象
 
   // フェーズの日本語表示用マッピング
   const phaseLabels: Record<GamePhase, string> = {
@@ -79,6 +85,74 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
         >
           {currentPhase === 'end' ? 'ターンを終了する' : '次のフェーズへ'}
         </button>
+
+        {/* 追加: メインフェーズ用のじゃんけん呼び出しボタン */}
+        {currentPhase === 'main' && onJanken && (
+          <button
+            onClick={onJanken}
+            style={{
+              padding: '6px 16px',
+              backgroundColor: '#9333ea', // 紫色のボタン
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+            }}
+          >
+            じゃんけんをする
+          </button>
+        )}
+
+        {/* 追加: 汎用山札操作ツール（メインフェーズのみ表示） */}
+        {currentPhase === 'main' && onDeckMill && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              borderLeft: '1px solid #ccc',
+              paddingLeft: '16px',
+            }}
+          >
+            <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+              汎用効果:
+            </span>
+            <select
+              value={millTarget}
+              onChange={(e) => setMillTarget(e.target.value as PlayerSide)}
+              style={{ padding: '4px', fontSize: '0.85rem' }}
+            >
+              <option value='opponent'>相手の山札</option>
+              <option value='player'>自分の山札</option>
+            </select>
+            <span style={{ fontSize: '0.85rem' }}>上から</span>
+            <input
+              type='number'
+              min='1'
+              value={millCount}
+              onChange={(e) =>
+                setMillCount(Math.max(1, parseInt(e.target.value) || 1))
+              }
+              style={{ width: '45px', padding: '4px', textAlign: 'center' }}
+            />
+            <span style={{ fontSize: '0.85rem' }}>枚墓地へ</span>
+            <button
+              onClick={() => onDeckMill(millTarget, millCount)}
+              style={{
+                padding: '4px 12px',
+                fontSize: '0.85rem',
+                backgroundColor: '#059669', // 緑系のボタンで区別
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+              }}
+            >
+              実行
+            </button>
+          </div>
+        )}
 
         {/* 手動アクションエリア (フェーズ1) */}
         <div
