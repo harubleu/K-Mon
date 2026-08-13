@@ -1,5 +1,5 @@
 // src/hooks/useGameState.ts
-import { useReducer } from 'react';
+import { useReducer, useState, useCallback } from 'react';
 import type { GameState, GameAction, ManaCard } from '../types';
 
 // テスト用ダミー初期状態
@@ -91,6 +91,13 @@ const shuffleArray = <T>(array: T[]): T[] => {
 // Stateを更新する純粋関数 (ルールの自動チェックは行わない)
 const gameReducer = (state: GameState, action: GameAction): GameState => {
   switch (action.type) {
+    // ----------------------------------------------------
+    // フェーズ4 追加: Undo/Redo用の状態復元アクション
+    // ----------------------------------------------------
+    case 'RESTORE_STATE': {
+      return action.payload;
+    }
+
     // ----------------------------------------------------
     // フェーズ2 追加: ターン進行管理と自動ドロー処理の統合
     // ----------------------------------------------------
@@ -413,5 +420,67 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
 export const useGameState = () => {
   const [gameState, dispatch] = useReducer(gameReducer, initialState);
-  return { gameState, dispatch };
+
+  // 修正: 過去(Undo用)と未来(Redo用)のスタックを別々に保持 (最大20手)
+  const [past, setPast] = useState<GameState[]>([]);
+  const [future, setFuture] = useState<GameState[]>([]);
+
+  // 状態を変更するアクションが発行されたら履歴に保存するラップ関数
+  const dispatchWithHistory = useCallback(
+    (action: GameAction) => {
+      if (
+        action.type !== 'RESTORE_STATE' &&
+        action.type !== 'SET_INITIAL_STATE'
+      ) {
+        setPast((prev: GameState[]) => {
+          const nextPast = [...prev, gameState];
+          return nextPast.length > 20 ? nextPast.slice(1) : nextPast;
+        });
+        // 新しい操作が行われたらRedo(未来)の履歴は破棄する
+        setFuture([]);
+      } else if (action.type === 'SET_INITIAL_STATE') {
+        // 初期化時は両方の履歴をリセット
+        setPast([]);
+        setFuture([]);
+      }
+      dispatch(action);
+    },
+    [gameState],
+  );
+
+  // 1手戻す (Undo) 処理
+  const handleUndo = useCallback(() => {
+    if (past.length === 0) return;
+    const previousState = past[past.length - 1];
+
+    setPast((prev: GameState[]) => prev.slice(0, -1));
+    // 現在の状態を「未来」スタックに退避
+    setFuture((prev: GameState[]) => [gameState, ...prev].slice(0, 20));
+
+    dispatch({ type: 'RESTORE_STATE', payload: previousState });
+  }, [past, gameState]);
+
+  // 追加: やり直す (Redo) 処理
+  const handleRedo = useCallback(() => {
+    if (future.length === 0) return;
+    const nextState = future[0];
+
+    setFuture((prev: GameState[]) => prev.slice(1));
+    // 現在の状態を「過去」スタックに退避
+    setPast((prev: GameState[]) => {
+      const nextPast = [...prev, gameState];
+      return nextPast.length > 20 ? nextPast.slice(1) : nextPast;
+    });
+
+    dispatch({ type: 'RESTORE_STATE', payload: nextState });
+  }, [future, gameState]);
+
+  return {
+    gameState,
+    dispatch: dispatchWithHistory,
+    undo: handleUndo,
+    canUndo: past.length > 0,
+    redo: handleRedo, // 追加
+    canRedo: future.length > 0, // 追加
+  };
 };

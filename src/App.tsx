@@ -9,7 +9,7 @@ import { JankenModal } from './components/GameBoard/JankenModal';
 import type { PlayerSide, ZoneType, MonsterCard, ManaCard } from './types'; // 必要な型を追加
 
 export const App: React.FC = () => {
-  const { gameState, dispatch } = useGameState();
+  const { gameState, dispatch, undo, canUndo, redo, canRedo } = useGameState();
   // 画面の切り替え状態を管理 (true: デッキ構築画面, false: 対戦画面)
   const [isBuildingDeck, setIsBuildingDeck] = useState(true);
   const [isJankenModalOpen, setIsJankenModalOpen] = useState(false);
@@ -213,6 +213,10 @@ export const App: React.FC = () => {
         onEquipSpecific={handleEquipSpecific}
         onShuffleDeck={handleShuffleDeck}
         onDraw={handleAutoDraw}
+        onUndo={undo}
+        canUndo={canUndo}
+        onRedo={redo}
+        canRedo={canRedo}
       />
 
       {/* [中段] アクション・情報表示エリア */}
@@ -224,6 +228,10 @@ export const App: React.FC = () => {
         onDamage={handleDamage}
         onJanken={handleBattleJanken} // 追加
         onDeckMill={handleDeckMill} // 追加
+        onUndo={undo} // 追加
+        canUndo={canUndo} // 追加
+        onRedo={redo} // 追加
+        canRedo={canRedo} // 追加
       />
 
       {/* [下段] Player (自分) エリア */}
@@ -239,6 +247,10 @@ export const App: React.FC = () => {
         onEquipSpecific={handleEquipSpecific}
         onShuffleDeck={handleShuffleDeck}
         onDraw={handleAutoDraw}
+        onUndo={undo}
+        canUndo={canUndo}
+        onRedo={redo}
+        canRedo={canRedo}
       />
     </div>
   );

@@ -163,4 +163,5 @@ export type GameAction =
   | SetInitialStateAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
-  | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } };
+  | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }
+  | { type: 'RESTORE_STATE'; payload: GameState };

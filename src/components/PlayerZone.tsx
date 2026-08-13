@@ -34,6 +34,10 @@ interface PlayerZoneProps {
   ) => void; // 修正
   onShuffleDeck: (side: PlayerSide) => void;
   onDraw: (side: PlayerSide) => void;
+  onUndo?: () => void;
+  canUndo?: boolean;
+  onRedo?: () => void;
+  canRedo?: boolean;
 }
 
 export const PlayerZone: React.FC<PlayerZoneProps> = ({
@@ -48,6 +52,10 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   onEquipSpecific,
   onShuffleDeck,
   onDraw,
+  onUndo,
+  canUndo,
+  onRedo,
+  canRedo,
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
@@ -306,6 +314,52 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               >
                 キャンセル（山札の上に戻す）
               </button>
+              {/* 追加: モーダルから直接 Undo / Redo できる領域 */}
+              <hr style={{ margin: '8px 0', width: '100%' }} />
+              <div
+                style={{
+                  display: 'flex',
+                  gap: '8px',
+                  justifyContent: 'center',
+                }}
+              >
+                {onUndo && (
+                  <button
+                    onClick={onUndo}
+                    disabled={!canUndo}
+                    style={{
+                      padding: '8px',
+                      backgroundColor: canUndo ? '#6b7280' : '#d1d5db',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: canUndo ? 'pointer' : 'not-allowed',
+                      flex: 1,
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    ↩ 1手戻す
+                  </button>
+                )}
+                {onRedo && (
+                  <button
+                    onClick={onRedo}
+                    disabled={!canRedo}
+                    style={{
+                      padding: '8px',
+                      backgroundColor: canRedo ? '#6b7280' : '#d1d5db',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: canRedo ? 'pointer' : 'not-allowed',
+                      flex: 1,
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    やり直す ↪
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

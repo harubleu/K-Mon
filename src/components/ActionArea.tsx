@@ -10,6 +10,10 @@ interface ActionAreaProps {
   onRecover?: (side: PlayerSide, manaIds: string[]) => void;
   onJanken?: () => void;
   onDeckMill?: (side: PlayerSide, count: number) => void;
+  onUndo?: () => void;
+  canUndo?: boolean;
+  onRedo?: () => void; // 追加
+  canRedo?: boolean; // 追加
 }
 
 export const ActionArea: React.FC<ActionAreaProps> = ({
@@ -20,6 +24,10 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
   onDamage,
   onJanken,
   onDeckMill,
+  onUndo,
+  canUndo,
+  onRedo, // 追加
+  canRedo, // 追加
 }) => {
   const [damageAmount, setDamageAmount] = useState<number>(1);
   const [millCount, setMillCount] = useState<number>(1); // 山札削り枚数
@@ -70,6 +78,45 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
           justifyContent: 'center',
         }}
       >
+        {/* 修正: Undo / Redo ボタンをまとめたエリア */}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {onUndo && (
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: canUndo ? '#6b7280' : '#d1d5db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: canUndo ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                fontSize: '0.85rem',
+              }}
+            >
+              ↩ 1手戻す
+            </button>
+          )}
+          {onRedo && (
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: canRedo ? '#6b7280' : '#d1d5db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: canRedo ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                fontSize: '0.85rem',
+              }}
+            >
+              やり直す ↪
+            </button>
+          )}
+        </div>
         {/* フェーズ進行ボタン */}
         <button
           onClick={onNextPhase}
