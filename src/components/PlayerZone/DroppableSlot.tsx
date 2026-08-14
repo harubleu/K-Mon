@@ -10,6 +10,7 @@ interface DroppableSlotProps {
   slotIndex: number;
   slotName: string;
   disabled?: boolean; // モーダル表示中などに無効化するためのプロパティ
+  idPrefix?: string;
   children?: React.ReactNode;
 }
 
@@ -19,9 +20,10 @@ export const DroppableSlot: React.FC<DroppableSlotProps> = ({
   slotIndex,
   slotName,
   disabled = false,
+  idPrefix = 'slot', // ← デフォルト設定
   children,
 }) => {
-  const droppableId = `slot_${side}_${monsterIndex}_${slotIndex}`;
+  const droppableId = `${idPrefix}_${side}_${monsterIndex}_${slotIndex}`;
 
   const { isOver, setNodeRef } = useDroppable({
     id: droppableId,
@@ -31,6 +33,7 @@ export const DroppableSlot: React.FC<DroppableSlotProps> = ({
       slotIndex,
       disabled, // ドロップ可能かどうかの情報を渡す
     },
+    disabled,
   });
 
   const highlightStyle: React.CSSProperties = {

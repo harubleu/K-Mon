@@ -5,6 +5,7 @@ import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
+import { DroppableSlot } from './PlayerZone/DroppableSlot';
 
 interface CemeteryAndExileModalProps {
   isOpen: boolean;
@@ -160,7 +161,12 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
           </div>
         </div>
 
-        <MonsterSummary monsters={monsters} label={label} />
+        <MonsterSummary
+          monsters={monsters}
+          label={label}
+          side={side}
+          idPrefix='modal_draw_summary'
+        />
 
         {/* カード一覧 */}
         <div
@@ -253,17 +259,27 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
             ></span>
 
             {[0, 1, 2].map((index) => (
-              <button
+              <DroppableSlot
                 key={index}
-                onClick={() => handleEquip(index)}
-                disabled={selectedIds.length !== 1}
-                style={{
-                  padding: '6px 12px',
-                  cursor: selectedIds.length === 1 ? 'pointer' : 'not-allowed',
-                }}
+                side={side}
+                monsterIndex={index}
+                slotIndex={0}
+                slotName=''
+                idPrefix='modal_cemetery' // モーダル専用IDプレフィックス
               >
-                モンスター{index + 1}に装備
-              </button>
+                <button
+                  key={index}
+                  onClick={() => handleEquip(index)}
+                  disabled={selectedIds.length !== 1}
+                  style={{
+                    padding: '6px 12px',
+                    cursor:
+                      selectedIds.length === 1 ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  モンスター{index + 1}に装備
+                </button>
+              </DroppableSlot>
             ))}
           </div>
         </div>

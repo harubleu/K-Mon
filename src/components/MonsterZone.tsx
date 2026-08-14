@@ -8,6 +8,7 @@ import { DroppableSlot } from './PlayerZone/DroppableSlot';
 interface MonsterZoneProps {
   monsters: MonsterCard[];
   side: PlayerSide;
+  isDropDisabled?: boolean;
   onEquipMana: (side: PlayerSide, monsterIndex: number) => void;
   onTrashMana: (
     side: PlayerSide,
@@ -21,6 +22,7 @@ interface MonsterZoneProps {
 export const MonsterZone: React.FC<MonsterZoneProps> = ({
   monsters,
   side,
+  isDropDisabled = false,
   onEquipMana,
   onTrashMana,
   onFlipMonster,
@@ -78,6 +80,7 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
             monsterIndex={index}
             slotIndex={0} // 仮置き: 今回はモンスター全体をターゲット(Index 0)とする
             slotName='' // 既存のUIレイアウトを維持するため空文字を指定
+            disabled={isDropDisabled} // モーダル表示中などにドロップを無効化
           >
             <div
               style={{

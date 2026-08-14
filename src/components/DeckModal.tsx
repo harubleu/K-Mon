@@ -114,7 +114,12 @@ export const DeckModal: React.FC<DeckModalProps> = ({
           </button>
         </div>
 
-        <MonsterSummary monsters={monsters} label={label} />
+        <MonsterSummary
+          monsters={monsters}
+          label={label}
+          side={side}
+          idPrefix='modal_draw_summary'
+        />
 
         {/* 山札カード一覧 */}
         <div

@@ -8,6 +8,7 @@ import { CemeteryAndExileModal } from './CemeteryAndExileModal';
 import { DeckModal } from './DeckModal'; // DeckModalをインポート
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
+import { DroppableSlot } from './PlayerZone/DroppableSlot';
 
 interface PlayerZoneProps {
   playerState: PlayerState;
@@ -56,7 +57,10 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false); // 山札モーダルの状態
 
   const topCemeteryCard = playerState.cemetery[playerState.cemetery.length - 1];
-
+  const isAnyModalOpen =
+    isCemeteryModalOpen ||
+    isDeckModalOpen ||
+    playerState.pendingDrawCards.length > 0;
   return (
     <div
       style={{
@@ -133,6 +137,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         <MonsterZone
           monsters={playerState.monsters}
           side={side}
+          isDropDisabled={isAnyModalOpen} // モーダルが開いている場合はドロップを無効化
           onEquipMana={onEquipMana}
           onTrashMana={onTrashMana}
           onFlipMonster={onFlipMonster}
@@ -230,7 +235,12 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
             <h3 style={{ marginTop: 0 }}>1枚ドロー確認 ({label})</h3>
 
             {/* 追加: モンスターと装備中マナの状況表示 */}
-            <MonsterSummary monsters={playerState.monsters} label={label} />
+            <MonsterSummary
+              monsters={playerState.monsters}
+              label={label}
+              side={side}
+              idPrefix='modal_draw_summary'
+            />
 
             <div
               style={{
@@ -265,20 +275,29 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
             >
               {playerState.monsters.map((monster, index) => (
-                <button
+                <DroppableSlot
                   key={monster.id}
-                  onClick={() => {
-                    onEquipSpecific(
-                      side,
-                      playerState.pendingDrawCards[0].id,
-                      'pending',
-                      index,
-                    );
-                  }}
-                  style={{ padding: '8px', cursor: 'pointer' }}
+                  side={side}
+                  monsterIndex={index}
+                  slotIndex={0}
+                  slotName=''
+                  idPrefix='modal_draw' // モーダル専用IDプレフィックス
                 >
-                  {monster.name || `モンスター枠 ${index + 1}`} に装備
-                </button>
+                  <button
+                    key={monster.id}
+                    onClick={() => {
+                      onEquipSpecific(
+                        side,
+                        playerState.pendingDrawCards[0].id,
+                        'pending',
+                        index,
+                      );
+                    }}
+                    style={{ padding: '8px', cursor: 'pointer' }}
+                  >
+                    {monster.name || `モンスター枠 ${index + 1}`} に装備
+                  </button>
+                </DroppableSlot>
               ))}
 
               <hr style={{ margin: '8px 0', width: '100%' }} />
