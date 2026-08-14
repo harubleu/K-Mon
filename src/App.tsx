@@ -7,6 +7,13 @@ import { ActionArea } from './components/ActionArea';
 import { DeckBuilder } from './components/DeckBuilder/DeckBuilder';
 import { JankenModal } from './components/GameBoard/JankenModal';
 import type { PlayerSide, ZoneType, MonsterCard, ManaCard } from './types'; // 必要な型を追加
+import {
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
 
 export const App: React.FC = () => {
   const { gameState, dispatch, undo, canUndo, redo, canRedo } = useGameState();
@@ -167,6 +174,51 @@ export const App: React.FC = () => {
     });
     // ※今後、ここに「1枚ドロー確認」モーダル等を開く処理を追加します
   };
+
+  // 1. D&D用センサーの設定（ボタンクリック動作と誤判定されないよう5pxの遊びを設定）
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    }),
+  );
+
+  // 2. ドラッグ終了時のハンドラー
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+
+    const activeData = active.data.current as
+      | {
+          manaCardId: string;
+          side: PlayerSide;
+          sourceZone: ZoneType;
+        }
+      | undefined;
+
+    const overData = over.data.current as
+      | {
+          side: PlayerSide;
+          monsterIndex: number;
+          slotIndex: number;
+        }
+      | undefined;
+
+    if (activeData && overData) {
+      dispatch({
+        type: 'EQUIP_SPECIFIC_MANA',
+        payload: {
+          side: overData.side,
+          monsterIndex: overData.monsterIndex,
+          sourceZone: activeData.sourceZone,
+          manaCardId: activeData.manaCardId,
+          targetSlotIndex: overData.slotIndex,
+        },
+      });
+    }
+  };
+
   // --- デッキ構築画面のレンダリング ---
   if (isBuildingDeck) {
     return <DeckBuilder onStartGame={handleStartGame} />;
@@ -174,117 +226,120 @@ export const App: React.FC = () => {
 
   // --- 対戦画面 (サンドボックス) のレンダリング ---
   return (
-    <div
-      style={{
-        maxWidth: '1200px',
-        margin: '0 auto',
-        padding: '0 16px 16px 16px',
-        fontFamily: 'sans-serif',
-      }}
-    >
-      {/* 画面上部 固定ヘッダー */}
-      <header
+    // 3. 対戦画面全体を <DndContext> で包む
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <div
         style={{
-          position: 'sticky',
-          top: 0,
-          zIndex: 100,
-          backgroundColor: '#ffffff',
-          borderBottom: '2px solid #e5e7eb',
-          padding: '8px 16px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: '12px',
+          maxWidth: '1200px',
+          margin: '0 auto',
+          padding: '0 16px 16px 16px',
+          fontFamily: 'sans-serif',
         }}
       >
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            onClick={undo}
-            disabled={!canUndo}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: canUndo ? '#4b5563' : '#d1d5db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: canUndo ? 'pointer' : 'not-allowed',
-              fontWeight: 'bold',
-              fontSize: '0.85rem',
-            }}
-          >
-            ↩ 1手戻す
-          </button>
-          <button
-            onClick={redo}
-            disabled={!canRedo}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: canRedo ? '#4b5563' : '#d1d5db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: canRedo ? 'pointer' : 'not-allowed',
-              fontWeight: 'bold',
-              fontSize: '0.85rem',
-            }}
-          >
-            やり直す ↪
-          </button>
-        </div>
+        {/* 画面上部 固定ヘッダー */}
+        <header
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 100,
+            backgroundColor: '#ffffff',
+            borderBottom: '2px solid #e5e7eb',
+            padding: '8px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={undo}
+              disabled={!canUndo}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: canUndo ? '#4b5563' : '#d1d5db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: canUndo ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                fontSize: '0.85rem',
+              }}
+            >
+              ↩ 1手戻す
+            </button>
+            <button
+              onClick={redo}
+              disabled={!canRedo}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: canRedo ? '#4b5563' : '#d1d5db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: canRedo ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                fontSize: '0.85rem',
+              }}
+            >
+              やり直す ↪
+            </button>
+          </div>
 
-        <h1 style={{ fontSize: '1.1rem', margin: 0, fontWeight: 'bold' }}>
-          カンジモンスターズ 特訓用Webアプリ
-        </h1>
-      </header>
+          <h1 style={{ fontSize: '1.1rem', margin: 0, fontWeight: 'bold' }}>
+            カンジモンスターズ 特訓用Webアプリ
+          </h1>
+        </header>
 
-      {/* じゃんけんモーダル */}
-      <JankenModal
-        isOpen={isJankenModalOpen}
-        purpose={jankenPurpose}
-        onComplete={handleJankenComplete}
-        onClose={handleJankenClose}
-      />
+        {/* じゃんけんモーダル */}
+        <JankenModal
+          isOpen={isJankenModalOpen}
+          purpose={jankenPurpose}
+          onComplete={handleJankenComplete}
+          onClose={handleJankenClose}
+        />
 
-      {/* [上段] Opponent (相手) エリア */}
-      <PlayerZone
-        playerState={gameState.opponent}
-        side='opponent'
-        label='相手'
-        onEquipMana={handleEquipMana}
-        onTrashMana={handleTrashMana}
-        onFlipMonster={handleFlipMonster}
-        onRecover={handleRecover}
-        onMoveCards={handleMoveCards}
-        onEquipSpecific={handleEquipSpecific}
-        onShuffleDeck={handleShuffleDeck}
-        onDraw={handleAutoDraw}
-      />
+        {/* [上段] Opponent (相手) エリア */}
+        <PlayerZone
+          playerState={gameState.opponent}
+          side='opponent'
+          label='相手'
+          onEquipMana={handleEquipMana}
+          onTrashMana={handleTrashMana}
+          onFlipMonster={handleFlipMonster}
+          onRecover={handleRecover}
+          onMoveCards={handleMoveCards}
+          onEquipSpecific={handleEquipSpecific}
+          onShuffleDeck={handleShuffleDeck}
+          onDraw={handleAutoDraw}
+        />
 
-      {/* [中段] アクション・情報表示エリア */}
-      <ActionArea
-        turnPlayer={gameState.turnPlayer}
-        turnCount={gameState.turnCount}
-        onSwitchTurn={handleNextPhase}
-        onDraw={handleAutoDraw}
-        onJanken={handleBattleJanken}
-        onDeckMill={handleDeckMill}
-      />
+        {/* [中段] アクション・情報表示エリア */}
+        <ActionArea
+          turnPlayer={gameState.turnPlayer}
+          turnCount={gameState.turnCount}
+          onSwitchTurn={handleNextPhase}
+          onDraw={handleAutoDraw}
+          onJanken={handleBattleJanken}
+          onDeckMill={handleDeckMill}
+        />
 
-      {/* [下段] Player (自分) エリア */}
-      <PlayerZone
-        playerState={gameState.player}
-        side='player'
-        label='自分'
-        onEquipMana={handleEquipMana}
-        onTrashMana={handleTrashMana}
-        onFlipMonster={handleFlipMonster}
-        onRecover={handleRecover}
-        onMoveCards={handleMoveCards}
-        onEquipSpecific={handleEquipSpecific}
-        onShuffleDeck={handleShuffleDeck}
-        onDraw={handleAutoDraw}
-      />
-    </div>
+        {/* [下段] Player (自分) エリア */}
+        <PlayerZone
+          playerState={gameState.player}
+          side='player'
+          label='自分'
+          onEquipMana={handleEquipMana}
+          onTrashMana={handleTrashMana}
+          onFlipMonster={handleFlipMonster}
+          onRecover={handleRecover}
+          onMoveCards={handleMoveCards}
+          onEquipSpecific={handleEquipSpecific}
+          onShuffleDeck={handleShuffleDeck}
+          onDraw={handleAutoDraw}
+        />
+      </div>
+    </DndContext>
   );
 };
 

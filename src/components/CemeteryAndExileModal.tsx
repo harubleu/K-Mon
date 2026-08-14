@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
 import { MonsterSummary } from './MonsterSummary';
+import { DraggableMana } from './GameBoard/DraggableMana';
 
 interface CemeteryAndExileModalProps {
   isOpen: boolean;
@@ -189,7 +190,13 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
                     backgroundColor: isSelected ? '#e6f0ff' : '#fff',
                   }}
                 >
-                  <Card card={card} />
+                  <DraggableMana
+                    mana={card}
+                    side={side}
+                    sourceZone={activeTab} // 現在のタブ ('cemetery' | 'exile') を sourceZone として渡す
+                  >
+                    <Card card={card} />
+                  </DraggableMana>
                 </div>
               );
             })

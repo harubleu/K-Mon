@@ -27,6 +27,7 @@ export interface MonsterCard {
   id: string;
   name: string;
   slots: string[]; // スロット（装備に必要な漢字/部首の配列）
+  slotPositions?: string[];
   equippedMana: ManaCard[];
   isFlipped: boolean;
   imageUrl?: string;
@@ -115,6 +116,7 @@ export type EquipSpecificManaAction = {
     monsterIndex: number;
     sourceZone: ZoneType;
     manaCardId: string;
+    targetSlotIndex?: number;
   };
 };
 

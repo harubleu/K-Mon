@@ -7,6 +7,7 @@ import { Card } from './Card';
 import { CemeteryAndExileModal } from './CemeteryAndExileModal';
 import { DeckModal } from './DeckModal'; // DeckModalをインポート
 import { MonsterSummary } from './MonsterSummary';
+import { DraggableMana } from './GameBoard/DraggableMana';
 
 interface PlayerZoneProps {
   playerState: PlayerState;
@@ -155,7 +156,15 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           🪦 {playerState.cemetery.length} / 🌌 {playerState.exile.length}
         </div>
         <div style={{ minHeight: '30px', marginBottom: '6px' }}>
-          {topCemeteryCard && <Card card={topCemeteryCard} size='sm' />}
+          {topCemeteryCard && (
+            <DraggableMana
+              mana={topCemeteryCard}
+              side={side}
+              sourceZone='cemetery'
+            >
+              <Card card={topCemeteryCard} size='sm' />
+            </DraggableMana>
+          )}
         </div>
         <button
           onClick={() => setIsCemeteryModalOpen(true)}
@@ -239,7 +248,13 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               <span style={{ fontSize: '0.9rem', color: '#555' }}>
                 引いたマナ:
               </span>
-              <Card card={playerState.pendingDrawCards[0]} />
+              <DraggableMana
+                mana={playerState.pendingDrawCards[0]}
+                side={side}
+                sourceZone='pending'
+              >
+                <Card card={playerState.pendingDrawCards[0]} />
+              </DraggableMana>
             </div>
 
             <div style={{ fontSize: '0.9rem', marginBottom: '8px' }}>

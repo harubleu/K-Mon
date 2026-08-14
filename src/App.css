@@ -182,3 +182,130 @@
     border-right-color: var(--border);
   }
 }
+
+/* =========================================
+   モンスター装備スロット用 はみ出し絶対配置クラス
+========================================= */
+/* 
+  マナカードは少し大きめの正方形とし、
+  モンスターカードの前面に配置する形ではみ出させます。
+*/
+.slot-item {
+  position: absolute;
+  width: 70%;
+  /* モンスター幅に対するマナのサイズ感（少し大きめの正方形） */
+  aspect-ratio: 1 / 1;
+  box-sizing: border-box;
+  z-index: 2;
+  /* モンスター画像(z-index: 1)の前面に配置 */
+}
+
+/* --- 1×1 --- */
+.slot-center-middle {
+  top: 50%;
+  left: 50%;
+  transform: translate(0%, 0%);
+}
+
+/* --- 2×1 （左右2分割）--- */
+/* 左辺1枚 */
+.slot-left-middle {
+  top: 50%;
+  left: 0;
+  transform: translate(-60%, -50%);
+}
+
+/* 右辺1枚 */
+.slot-right-middle {
+  top: 50%;
+  right: 0;
+  transform: translate(60%, -50%);
+}
+
+/* --- 1×2 （上下2分割）--- */
+/* 上辺1枚 */
+.slot-center-upper {
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -60%);
+}
+
+/* 下辺1枚 */
+.slot-center-lower {
+  bottom: 0;
+  left: 50%;
+  transform: translate(-50%, 60%);
+}
+
+/* --- 2×2 （左右2分割×上下2分割）--- */
+
+/* 左辺2分割（上・下） */
+.slot-left-upper {
+  top: 10%;
+  left: 0;
+  transform: translateX(-60%);
+}
+
+.slot-left-lower {
+  bottom: 10%;
+  left: 0;
+  transform: translateX(-60%);
+}
+
+/* 右辺2分割（上・下） */
+.slot-right-upper {
+  top: 10%;
+  right: 0;
+  transform: translateX(60%);
+}
+
+.slot-right-lower {
+  bottom: 10%;
+  right: 0;
+  transform: translateX(60%);
+}
+
+/* --- 1×3 （上下3分割）--- */
+.slot-center-top {
+  top: -5%;
+  left: 0;
+  transform: translateX(-60%);
+}
+
+/*.slot-center-middle */
+
+.slot-center-bottom {
+  bottom: -5%;
+  left: 0;
+  transform: translateX(-60%);
+}
+
+/* 左辺3分割（上・中・下） */
+.slot-left-top {
+  top: -5%;
+  left: 0;
+  transform: translateX(-60%);
+}
+
+/* .slot-left-middle */
+
+.slot-left-bottom {
+  bottom: -5%;
+  left: 0;
+  transform: translateX(-60%);
+}
+
+/* 右辺3分割（上・中・下） */
+.slot-right-top {
+  top: -5%;
+  right: 0;
+  transform: translateX(60%);
+}
+
+/* .slot-right-middle */
+
+.slot-right-bottom {
+  bottom: -5%;
+  right: 0;
+  transform: translateX(60%);
+}
