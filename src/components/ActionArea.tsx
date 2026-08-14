@@ -1,45 +1,26 @@
 import React, { useState } from 'react';
-import type { PlayerSide, GamePhase } from '../types';
+import type { PlayerSide, ZoneType } from '../types';
 
 interface ActionAreaProps {
   turnPlayer: PlayerSide;
   turnCount: number;
-  currentPhase: GamePhase;
-  onNextPhase: () => void;
-  onDamage: (amount: number) => void;
-  onRecover?: (side: PlayerSide, manaIds: string[]) => void;
+  onSwitchTurn: () => void;
+  onDraw: (side: PlayerSide) => void;
   onJanken?: () => void;
-  onDeckMill?: (side: PlayerSide, count: number) => void;
-  onUndo?: () => void;
-  canUndo?: boolean;
-  onRedo?: () => void; // 追加
-  canRedo?: boolean; // 追加
+  onDeckMill?: (side: PlayerSide, count: number, destination: ZoneType) => void;
 }
 
 export const ActionArea: React.FC<ActionAreaProps> = ({
   turnPlayer,
   turnCount,
-  currentPhase,
-  onNextPhase,
-  onDamage,
+  onSwitchTurn,
+  onDraw,
   onJanken,
   onDeckMill,
-  onUndo,
-  canUndo,
-  onRedo, // 追加
-  canRedo, // 追加
 }) => {
-  const [damageAmount, setDamageAmount] = useState<number>(1);
-  const [millCount, setMillCount] = useState<number>(1); // 山札削り枚数
-  const [millTarget, setMillTarget] = useState<PlayerSide>('opponent'); // 山札削り対象
-
-  // フェーズの日本語表示用マッピング
-  const phaseLabels: Record<GamePhase, string> = {
-    start: 'スタートフェーズ',
-    draw: 'ドローフェーズ',
-    main: 'メインフェーズ',
-    end: 'エンドフェーズ',
-  };
+  const [millCount, setMillCount] = useState<number>(1);
+  const [millTarget, setMillTarget] = useState<PlayerSide>('opponent');
+  const [millDestination, setMillDestination] = useState<ZoneType>('cemetery');
 
   return (
     <div
@@ -64,8 +45,6 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
         </span>
         <span style={{ margin: '0 12px' }}>|</span>
         <span>ターン {turnCount}</span>
-        <span style={{ margin: '0 12px' }}>|</span>
-        <span>{phaseLabels[currentPhase]}</span>
       </div>
 
       {/* アクションボタンエリア */}
@@ -78,48 +57,9 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
           justifyContent: 'center',
         }}
       >
-        {/* 修正: Undo / Redo ボタンをまとめたエリア */}
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {onUndo && (
-            <button
-              onClick={onUndo}
-              disabled={!canUndo}
-              style={{
-                padding: '6px 12px',
-                backgroundColor: canUndo ? '#6b7280' : '#d1d5db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: canUndo ? 'pointer' : 'not-allowed',
-                fontWeight: 'bold',
-                fontSize: '0.85rem',
-              }}
-            >
-              ↩ 1手戻す
-            </button>
-          )}
-          {onRedo && (
-            <button
-              onClick={onRedo}
-              disabled={!canRedo}
-              style={{
-                padding: '6px 12px',
-                backgroundColor: canRedo ? '#6b7280' : '#d1d5db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: canRedo ? 'pointer' : 'not-allowed',
-                fontWeight: 'bold',
-                fontSize: '0.85rem',
-              }}
-            >
-              やり直す ↪
-            </button>
-          )}
-        </div>
-        {/* フェーズ進行ボタン */}
+        {/* ターン切り替えボタン */}
         <button
-          onClick={onNextPhase}
+          onClick={onSwitchTurn}
           style={{
             padding: '6px 16px',
             backgroundColor: '#3b82f6',
@@ -130,16 +70,32 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
             fontWeight: 'bold',
           }}
         >
-          {currentPhase === 'end' ? 'ターンを終了する' : '次のフェーズへ'}
+          ターンを終了（交代）
         </button>
 
-        {/* 追加: メインフェーズ用のじゃんけん呼び出しボタン */}
-        {currentPhase === 'main' && onJanken && (
+        {/* 山札1枚ドローボタン */}
+        <button
+          onClick={() => onDraw(turnPlayer)}
+          style={{
+            padding: '6px 16px',
+            backgroundColor: '#2563eb',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+          }}
+        >
+          🎴 山札1枚ドロー ({turnPlayer === 'player' ? '自分' : '相手'})
+        </button>
+
+        {/* じゃんけん呼び出しボタン */}
+        {onJanken && (
           <button
             onClick={onJanken}
             style={{
               padding: '6px 16px',
-              backgroundColor: '#9333ea', // 紫色のボタン
+              backgroundColor: '#9333ea',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
@@ -151,13 +107,13 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
           </button>
         )}
 
-        {/* 追加: 汎用山札操作ツール（メインフェーズのみ表示） */}
-        {currentPhase === 'main' && onDeckMill && (
+        {/* 汎用山札操作ツール（墓地 / 除外 の選択対応） */}
+        {onDeckMill && (
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
+              gap: '6px',
               borderLeft: '1px solid #ccc',
               paddingLeft: '16px',
             }}
@@ -183,13 +139,21 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
               }
               style={{ width: '45px', padding: '4px', textAlign: 'center' }}
             />
-            <span style={{ fontSize: '0.85rem' }}>枚墓地へ</span>
+            <span style={{ fontSize: '0.85rem' }}>枚を</span>
+            <select
+              value={millDestination}
+              onChange={(e) => setMillDestination(e.target.value as ZoneType)}
+              style={{ padding: '4px', fontSize: '0.85rem' }}
+            >
+              <option value='cemetery'>墓地へ</option>
+              <option value='exile'>除外</option>
+            </select>
             <button
-              onClick={() => onDeckMill(millTarget, millCount)}
+              onClick={() => onDeckMill(millTarget, millCount, millDestination)}
               style={{
                 padding: '4px 12px',
                 fontSize: '0.85rem',
-                backgroundColor: '#059669', // 緑系のボタンで区別
+                backgroundColor: '#059669',
                 color: 'white',
                 border: 'none',
                 borderRadius: '4px',
@@ -200,39 +164,6 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
             </button>
           </div>
         )}
-
-        {/* 手動アクションエリア (フェーズ1) */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            borderLeft: '1px solid #ccc',
-            paddingLeft: '16px',
-          }}
-        >
-          <span style={{ fontSize: '0.85rem' }}>相手にダメージ:</span>
-          <input
-            type='number'
-            min='1'
-            value={damageAmount}
-            onChange={(e) =>
-              setDamageAmount(Math.max(1, parseInt(e.target.value) || 1))
-            }
-            style={{ width: '50px', padding: '4px', textAlign: 'center' }}
-          />
-          <span style={{ fontSize: '0.85rem' }}>枚</span>
-          <button
-            onClick={() => onDamage(damageAmount)}
-            style={{
-              padding: '4px 12px',
-              fontSize: '0.85rem',
-              cursor: 'pointer',
-            }}
-          >
-            実行
-          </button>
-        </div>
       </div>
     </div>
   );

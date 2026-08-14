@@ -6,6 +6,7 @@ import { MonsterZone } from './MonsterZone';
 import { Card } from './Card';
 import { CemeteryAndExileModal } from './CemeteryAndExileModal';
 import { DeckModal } from './DeckModal'; // DeckModalをインポート
+import { MonsterSummary } from './MonsterSummary';
 
 interface PlayerZoneProps {
   playerState: PlayerState;
@@ -34,10 +35,6 @@ interface PlayerZoneProps {
   ) => void; // 修正
   onShuffleDeck: (side: PlayerSide) => void;
   onDraw: (side: PlayerSide) => void;
-  onUndo?: () => void;
-  canUndo?: boolean;
-  onRedo?: () => void;
-  canRedo?: boolean;
 }
 
 export const PlayerZone: React.FC<PlayerZoneProps> = ({
@@ -52,10 +49,6 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   onEquipSpecific,
   onShuffleDeck,
   onDraw,
-  onUndo,
-  canUndo,
-  onRedo,
-  canRedo,
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
@@ -177,6 +170,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         isOpen={isCemeteryModalOpen}
         cemetery={playerState.cemetery}
         exile={playerState.exile}
+        monsters={playerState.monsters}
         side={side}
         label={label}
         onClose={() => setIsCemeteryModalOpen(false)}
@@ -189,6 +183,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
       <DeckModal
         isOpen={isDeckModalOpen}
         deck={playerState.deck}
+        monsters={playerState.monsters}
         side={side}
         label={label}
         onClose={() => setIsDeckModalOpen(false)}
@@ -196,7 +191,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         onEquipSpecific={onEquipSpecific}
       />
 
-      {/* ドロー確認モーダル (pendingDrawCards の有無で制御) */}
+      {/* ドロー確認モーダル */}
       {playerState.pendingDrawCards.length > 0 && (
         <div
           style={{
@@ -217,17 +212,23 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               backgroundColor: 'white',
               padding: '24px',
               borderRadius: '8px',
-              minWidth: '300px',
+              maxWidth: '500px',
+              width: '90%',
+              maxHeight: '90vh',
+              overflowY: 'auto',
             }}
           >
-            <h3 style={{ marginTop: 0 }}>1枚ドロー確認</h3>
+            <h3 style={{ marginTop: 0 }}>1枚ドロー確認 ({label})</h3>
+
+            {/* 追加: モンスターと装備中マナの状況表示 */}
+            <MonsterSummary monsters={playerState.monsters} label={label} />
 
             <div
               style={{
-                marginBottom: '20px',
+                marginBottom: '16px',
                 fontSize: '1.2rem',
                 textAlign: 'center',
-                padding: '16px',
+                padding: '12px',
                 border: '1px solid #ccc',
                 display: 'flex',
                 flexDirection: 'column',
@@ -255,7 +256,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                     onEquipSpecific(
                       side,
                       playerState.pendingDrawCards[0].id,
-                      'pending', // sourceZone を pending に変更
+                      'pending',
                       index,
                     );
                   }}
@@ -272,7 +273,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   onMoveCards(
                     side,
                     [playerState.pendingDrawCards[0].id],
-                    'pending', // sourceZone を pending に変更
+                    'pending',
                     'cemetery',
                   );
                 }}
@@ -286,7 +287,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   onMoveCards(
                     side,
                     [playerState.pendingDrawCards[0].id],
-                    'pending', // sourceZone を pending に変更
+                    'pending',
                     'exile',
                   );
                 }}
@@ -300,12 +301,12 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   onMoveCards(
                     side,
                     [playerState.pendingDrawCards[0].id],
-                    'pending', // sourceZone を pending に変更
-                    'deck', // targetZone は deck (Reducer内で先頭に戻るよう処理)
+                    'pending',
+                    'deck',
                   );
                 }}
                 style={{
-                  marginTop: '16px',
+                  marginTop: '8px',
                   padding: '8px',
                   cursor: 'pointer',
                   backgroundColor: '#eee',
@@ -314,52 +315,6 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               >
                 キャンセル（山札の上に戻す）
               </button>
-              {/* 追加: モーダルから直接 Undo / Redo できる領域 */}
-              <hr style={{ margin: '8px 0', width: '100%' }} />
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '8px',
-                  justifyContent: 'center',
-                }}
-              >
-                {onUndo && (
-                  <button
-                    onClick={onUndo}
-                    disabled={!canUndo}
-                    style={{
-                      padding: '8px',
-                      backgroundColor: canUndo ? '#6b7280' : '#d1d5db',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: canUndo ? 'pointer' : 'not-allowed',
-                      flex: 1,
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    ↩ 1手戻す
-                  </button>
-                )}
-                {onRedo && (
-                  <button
-                    onClick={onRedo}
-                    disabled={!canRedo}
-                    style={{
-                      padding: '8px',
-                      backgroundColor: canRedo ? '#6b7280' : '#d1d5db',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: canRedo ? 'pointer' : 'not-allowed',
-                      flex: 1,
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    やり直す ↪
-                  </button>
-                )}
-              </div>
             </div>
           </div>
         </div>

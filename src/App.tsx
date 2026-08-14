@@ -24,11 +24,16 @@ export const App: React.FC = () => {
     opponentMonsters: MonsterCard[],
     opponentDeck: ManaCard[],
   ) => {
+    const setFlipped = (monsters: MonsterCard[]) =>
+      monsters.map((m) => ({ ...m, isFlipped: true }));
     dispatch({
       type: 'SET_INITIAL_STATE',
       payload: {
-        player: { monsters: playerMonsters, deck: playerDeck },
-        opponent: { monsters: opponentMonsters, deck: opponentDeck },
+        player: { monsters: setFlipped(playerMonsters), deck: playerDeck },
+        opponent: {
+          monsters: setFlipped(opponentMonsters),
+          deck: opponentDeck,
+        },
       },
     });
     setIsBuildingDeck(false);
@@ -58,21 +63,23 @@ export const App: React.FC = () => {
     setIsJankenModalOpen(true);
   };
 
-  const handleDeckMill = (targetSide: PlayerSide, count: number) => {
+  const handleDeckMill = (
+    targetSide: PlayerSide,
+    count: number,
+    destination: ZoneType = 'cemetery',
+  ) => {
     const targetDeck = gameState[targetSide].deck;
     if (targetDeck.length === 0) return;
 
-    // 山札の上（先頭）から指定枚数分のカードIDを取得
     const cardsToMove = targetDeck.slice(0, count).map((card) => card.id);
 
-    // 既存の領域移動アクションを再利用して墓地へ送る
     dispatch({
       type: 'MOVE_CARD_BETWEEN_ZONES',
       payload: {
         side: targetSide,
         cardIds: cardsToMove,
         sourceZone: 'deck',
-        targetZone: 'cemetery',
+        targetZone: destination,
       },
     });
   };
@@ -109,13 +116,6 @@ export const App: React.FC = () => {
     dispatch({
       type: 'FLIP_MONSTER',
       payload: { side, monsterIndex },
-    });
-  };
-
-  const handleDamage = (amount: number) => {
-    dispatch({
-      type: 'DAMAGE',
-      payload: { targetSide: 'opponent', amount }, // 中央エリアからの操作は相手へのダメージを基本とする
     });
   };
 
@@ -178,26 +178,71 @@ export const App: React.FC = () => {
       style={{
         maxWidth: '1200px',
         margin: '0 auto',
-        padding: '16px',
+        padding: '0 16px 16px 16px',
         fontFamily: 'sans-serif',
       }}
     >
-      <h1
+      {/* 画面上部 固定ヘッダー */}
+      <header
         style={{
-          fontSize: '1.25rem',
-          textAlign: 'center',
-          marginBottom: '16px',
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
+          backgroundColor: '#ffffff',
+          borderBottom: '2px solid #e5e7eb',
+          padding: '8px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: '12px',
         }}
       >
-        カンジモンスターズ 特訓用Webアプリ
-      </h1>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={undo}
+            disabled={!canUndo}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: canUndo ? '#4b5563' : '#d1d5db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: canUndo ? 'pointer' : 'not-allowed',
+              fontWeight: 'bold',
+              fontSize: '0.85rem',
+            }}
+          >
+            ↩ 1手戻す
+          </button>
+          <button
+            onClick={redo}
+            disabled={!canRedo}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: canRedo ? '#4b5563' : '#d1d5db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: canRedo ? 'pointer' : 'not-allowed',
+              fontWeight: 'bold',
+              fontSize: '0.85rem',
+            }}
+          >
+            やり直す ↪
+          </button>
+        </div>
+
+        <h1 style={{ fontSize: '1.1rem', margin: 0, fontWeight: 'bold' }}>
+          カンジモンスターズ 特訓用Webアプリ
+        </h1>
+      </header>
 
       {/* じゃんけんモーダル */}
       <JankenModal
         isOpen={isJankenModalOpen}
-        purpose={jankenPurpose} // 追加
+        purpose={jankenPurpose}
         onComplete={handleJankenComplete}
-        onClose={handleJankenClose} // 追加
+        onClose={handleJankenClose}
       />
 
       {/* [上段] Opponent (相手) エリア */}
@@ -213,25 +258,16 @@ export const App: React.FC = () => {
         onEquipSpecific={handleEquipSpecific}
         onShuffleDeck={handleShuffleDeck}
         onDraw={handleAutoDraw}
-        onUndo={undo}
-        canUndo={canUndo}
-        onRedo={redo}
-        canRedo={canRedo}
       />
 
       {/* [中段] アクション・情報表示エリア */}
       <ActionArea
         turnPlayer={gameState.turnPlayer}
         turnCount={gameState.turnCount}
-        currentPhase={gameState.currentPhase}
-        onNextPhase={handleNextPhase}
-        onDamage={handleDamage}
-        onJanken={handleBattleJanken} // 追加
-        onDeckMill={handleDeckMill} // 追加
-        onUndo={undo} // 追加
-        canUndo={canUndo} // 追加
-        onRedo={redo} // 追加
-        canRedo={canRedo} // 追加
+        onSwitchTurn={handleNextPhase}
+        onDraw={handleAutoDraw}
+        onJanken={handleBattleJanken}
+        onDeckMill={handleDeckMill}
       />
 
       {/* [下段] Player (自分) エリア */}
@@ -247,10 +283,6 @@ export const App: React.FC = () => {
         onEquipSpecific={handleEquipSpecific}
         onShuffleDeck={handleShuffleDeck}
         onDraw={handleAutoDraw}
-        onUndo={undo}
-        canUndo={canUndo}
-        onRedo={redo}
-        canRedo={canRedo}
       />
     </div>
   );

@@ -1,25 +1,38 @@
 // src/components/CemeteryAndExileModal.tsx
 
 import React, { useState, useEffect } from 'react';
-import type { ManaCard, PlayerSide, ZoneType } from '../types';
+import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
+import { MonsterSummary } from './MonsterSummary';
 
 interface CemeteryAndExileModalProps {
   isOpen: boolean;
   cemetery: ManaCard[];
   exile: ManaCard[];
+  monsters: MonsterCard[];
   side: PlayerSide;
   label: string;
   onClose: () => void;
   onRecover: (side: PlayerSide, manaIds: string[]) => void;
-  onMoveCards: (side: PlayerSide, cardIds: string[], sourceZone: ZoneType, toZone: ZoneType) => void;
-  onEquipSpecific: (side: PlayerSide, cardId: string, sourceZone: ZoneType, monsterIndex: number) => void;
+  onMoveCards: (
+    side: PlayerSide,
+    cardIds: string[],
+    sourceZone: ZoneType,
+    toZone: ZoneType,
+  ) => void;
+  onEquipSpecific: (
+    side: PlayerSide,
+    cardId: string,
+    sourceZone: ZoneType,
+    monsterIndex: number,
+  ) => void;
 }
 
 export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
   isOpen,
   cemetery,
   exile,
+  monsters,
   side,
   label,
   onClose,
@@ -41,11 +54,15 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
 
   const handleToggleCard = (cardId: string) => {
     setSelectedIds((prev) =>
-      prev.includes(cardId) ? prev.filter((id) => id !== cardId) : [...prev, cardId]
+      prev.includes(cardId)
+        ? prev.filter((id) => id !== cardId)
+        : [...prev, cardId],
     );
   };
 
-  const handleAction = (actionType: 'recover' | 'moveToExile' | 'moveToCemetery') => {
+  const handleAction = (
+    actionType: 'recover' | 'moveToExile' | 'moveToCemetery',
+  ) => {
     if (selectedIds.length === 0) return;
 
     if (actionType === 'recover') {
@@ -92,20 +109,36 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
           flexDirection: 'column',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '12px',
+          }}
+        >
           <h3 style={{ margin: 0 }}>{label} の墓地・除外確認</h3>
-          <button onClick={onClose} style={{ cursor: 'pointer' }}>閉じる</button>
+          <button onClick={onClose} style={{ cursor: 'pointer' }}>
+            閉じる
+          </button>
         </div>
 
         {/* タブ切り替え */}
-        <div style={{ display: 'flex', borderBottom: '2px solid #ddd', marginBottom: '16px' }}>
+        <div
+          style={{
+            display: 'flex',
+            borderBottom: '2px solid #ddd',
+            marginBottom: '16px',
+          }}
+        >
           <div
             onClick={() => setActiveTab('cemetery')}
             style={{
               padding: '8px 16px',
               cursor: 'pointer',
               fontWeight: 'bold',
-              borderBottom: activeTab === 'cemetery' ? '3px solid #007bff' : 'none',
+              borderBottom:
+                activeTab === 'cemetery' ? '3px solid #007bff' : 'none',
               color: activeTab === 'cemetery' ? '#007bff' : '#555',
             }}
           >
@@ -117,7 +150,8 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
               padding: '8px 16px',
               cursor: 'pointer',
               fontWeight: 'bold',
-              borderBottom: activeTab === 'exile' ? '3px solid #dc3545' : 'none',
+              borderBottom:
+                activeTab === 'exile' ? '3px solid #dc3545' : 'none',
               color: activeTab === 'exile' ? '#dc3545' : '#555',
             }}
           >
@@ -125,8 +159,19 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
           </div>
         </div>
 
+        <MonsterSummary monsters={monsters} label={label} />
+
         {/* カード一覧 */}
-        <div style={{ flexGrow: 1, overflowY: 'auto', display: 'flex', flexWrap: 'wrap', gap: '8px', alignContent: 'flex-start' }}>
+        <div
+          style={{
+            flexGrow: 1,
+            overflowY: 'auto',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '8px',
+            alignContent: 'flex-start',
+          }}
+        >
           {currentCards.length === 0 ? (
             <p style={{ color: '#888' }}>カードがありません。</p>
           ) : (
@@ -152,28 +197,63 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
         </div>
 
         {/* アクション領域 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '8px', backgroundColor: '#f8f9fa', borderRadius: '4px', marginTop: '16px' }}>
-          <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>選択中のカード: {selectedIds.length}枚</div>
-          
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            padding: '8px',
+            backgroundColor: '#f8f9fa',
+            borderRadius: '4px',
+            marginTop: '16px',
+          }}
+        >
+          <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+            選択中のカード: {selectedIds.length}枚
+          </div>
+
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             {activeTab === 'cemetery' && (
               <>
-                <button onClick={() => handleAction('recover')} disabled={selectedIds.length === 0} style={{ padding: '6px 12px' }}>山札に戻す(回復)</button>
-                <button onClick={() => handleAction('moveToExile')} disabled={selectedIds.length === 0} style={{ padding: '6px 12px' }}>除外する</button>
+                <button
+                  onClick={() => handleAction('recover')}
+                  disabled={selectedIds.length === 0}
+                  style={{ padding: '6px 12px' }}
+                >
+                  山札に戻す(回復)
+                </button>
+                <button
+                  onClick={() => handleAction('moveToExile')}
+                  disabled={selectedIds.length === 0}
+                  style={{ padding: '6px 12px' }}
+                >
+                  除外する
+                </button>
               </>
             )}
             {activeTab === 'exile' && (
-              <button onClick={() => handleAction('moveToCemetery')} disabled={selectedIds.length === 0} style={{ padding: '6px 12px' }}>墓地に戻す</button>
+              <button
+                onClick={() => handleAction('moveToCemetery')}
+                disabled={selectedIds.length === 0}
+                style={{ padding: '6px 12px' }}
+              >
+                墓地に戻す
+              </button>
             )}
 
-            <span style={{ borderLeft: '1px solid #ccc', margin: '0 4px' }}></span>
+            <span
+              style={{ borderLeft: '1px solid #ccc', margin: '0 4px' }}
+            ></span>
 
             {[0, 1, 2].map((index) => (
               <button
                 key={index}
                 onClick={() => handleEquip(index)}
                 disabled={selectedIds.length !== 1}
-                style={{ padding: '6px 12px', cursor: selectedIds.length === 1 ? 'pointer' : 'not-allowed' }}
+                style={{
+                  padding: '6px 12px',
+                  cursor: selectedIds.length === 1 ? 'pointer' : 'not-allowed',
+                }}
               >
                 モンスター{index + 1}に装備
               </button>

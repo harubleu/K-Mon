@@ -2,71 +2,61 @@
 import { useReducer, useState, useCallback } from 'react';
 import type { GameState, GameAction, ManaCard } from '../types';
 
-// テスト用ダミー初期状態
+// 初期状態
 const initialState: GameState = {
   player: {
-    deck: [
-      { id: 'p-m1', color: 'red' } as any, // ※マスターデータ完全移行までは既存のモック維持
-      { id: 'p-m2', color: 'blue' } as any,
-      { id: 'p-m3', color: 'yellow' } as any,
-      { id: 'p-m4', color: 'green' } as any,
-      { id: 'p-m5', color: 'white' } as any,
-    ],
-    cemetery: [{ id: 'p-c1', color: 'sun' } as any],
+    deck: [],
+    cemetery: [],
     exile: [],
     pendingDrawCards: [],
     monsters: [
       {
         id: 'p-mon-1',
-        name: '火炎竜',
-        slots: ['red', 'red', 'white'],
-        equippedMana: [{ id: 'p-m6', color: 'red' } as any],
+        name: '',
+        slots: [],
+        equippedMana: [],
         isFlipped: false,
       },
       {
         id: 'p-mon-2',
-        name: '水流獣',
-        slots: ['blue', 'green'],
+        name: '',
+        slots: [],
         equippedMana: [],
         isFlipped: false,
       },
       {
         id: 'p-mon-3',
-        name: '雷電鳥',
-        slots: ['yellow', 'yellow'],
+        name: '',
+        slots: [],
         equippedMana: [],
         isFlipped: false,
       },
     ],
   },
   opponent: {
-    deck: [
-      { id: 'o-m1', color: 'moon' } as any,
-      { id: 'o-m2', color: 'red' } as any,
-      { id: 'o-m3', color: 'blue' } as any,
-    ],
+    deck: [],
     cemetery: [],
     exile: [],
     pendingDrawCards: [],
     monsters: [
       {
         id: 'o-mon-1',
-        name: '岩石巨人',
-        slots: ['green', 'green', 'sun'],
+        name: '',
+        slots: [],
         equippedMana: [],
         isFlipped: false,
       },
       {
         id: 'o-mon-2',
-        name: '暗黒騎士',
-        slots: ['moon', 'red'],
+        name: '',
+        slots: [],
         equippedMana: [],
         isFlipped: false,
       },
       {
         id: 'o-mon-3',
-        name: '光の精霊',
-        slots: ['sun', 'white'],
+        name: '',
+        slots: [],
         equippedMana: [],
         isFlipped: false,
       },
@@ -99,47 +89,15 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     }
 
     // ----------------------------------------------------
-    // フェーズ2 追加: ターン進行管理と自動ドロー処理の統合
+    // ターン切替処理（フェーズ進行から簡略化）
     // ----------------------------------------------------
     case 'NEXT_PHASE': {
-      const { currentPhase, turnPlayer, turnCount } = state;
-
-      if (currentPhase === 'start') {
-        // start -> draw への移行時、ターンプレイヤーの山札から1枚引いてpendingDrawCardsへ移動する
-        const playerState = state[turnPlayer];
-
-        // 山札が0枚の場合はドローできない（フェーズのみ進める）
-        if (playerState.deck.length === 0) {
-          return { ...state, currentPhase: 'draw' };
-        }
-
-        const newDeck = [...playerState.deck];
-        const drawnCard = newDeck.shift()!; // 先頭から1枚ドロー
-        const newPending = [...playerState.pendingDrawCards, drawnCard];
-
-        return {
-          ...state,
-          currentPhase: 'draw',
-          [turnPlayer]: {
-            ...playerState,
-            deck: newDeck,
-            pendingDrawCards: newPending,
-          },
-        };
-      } else if (currentPhase === 'draw') {
-        return { ...state, currentPhase: 'main' };
-      } else if (currentPhase === 'main') {
-        return { ...state, currentPhase: 'end' };
-      } else if (currentPhase === 'end') {
-        // end -> start への移行時、ターンプレイヤーを交代し、ターン数を加算する
-        return {
-          ...state,
-          currentPhase: 'start',
-          turnPlayer: turnPlayer === 'player' ? 'opponent' : 'player',
-          turnCount: turnCount + 1,
-        };
-      }
-      return state;
+      const { turnPlayer, turnCount } = state;
+      return {
+        ...state,
+        turnPlayer: turnPlayer === 'player' ? 'opponent' : 'player',
+        turnCount: turnPlayer === 'opponent' ? turnCount + 1 : turnCount,
+      };
     }
 
     // ----------------------------------------------------
@@ -432,12 +390,21 @@ export const useGameState = () => {
         action.type !== 'RESTORE_STATE' &&
         action.type !== 'SET_INITIAL_STATE'
       ) {
-        setPast((prev: GameState[]) => {
-          const nextPast = [...prev, gameState];
-          return nextPast.length > 20 ? nextPast.slice(1) : nextPast;
-        });
-        // 新しい操作が行われたらRedo(未来)の履歴は破棄する
-        setFuture([]);
+        // ドローモーダル内での操作（pending領域からのカード移動・装備）は中間状態のため履歴追加をスキップ
+        const isPendingAction =
+          (action.type === 'EQUIP_SPECIFIC_MANA' &&
+            action.payload.sourceZone === 'pending') ||
+          (action.type === 'MOVE_CARD_BETWEEN_ZONES' &&
+            action.payload.sourceZone === 'pending');
+
+        if (!isPendingAction) {
+          setPast((prev: GameState[]) => {
+            const nextPast = [...prev, gameState];
+            return nextPast.length > 20 ? nextPast.slice(1) : nextPast;
+          });
+          // 新しい操作が行われたらRedo(未来)の履歴は破棄する
+          setFuture([]);
+        }
       } else if (action.type === 'SET_INITIAL_STATE') {
         // 初期化時は両方の履歴をリセット
         setPast([]);
