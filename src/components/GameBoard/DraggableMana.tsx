@@ -19,23 +19,21 @@ export const DraggableMana: React.FC<DraggableManaProps> = ({
 }) => {
   const draggableId = `${sourceZone}_${side}_${mana.id}`;
 
-  const { attributes, listeners, setNodeRef, transform, isDragging } =
-    useDraggable({
-      id: draggableId,
-      data: {
-        manaCardId: mana.id,
-        side,
-        sourceZone,
-      },
-    });
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: draggableId,
+    data: {
+      manaCardId: mana.id,
+      side,
+      sourceZone,
+      mana,
+    },
+  });
 
   const style: React.CSSProperties = {
-    transform: transform
-      ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
-      : undefined,
-    opacity: isDragging ? 0.5 : 1,
-    cursor: 'grab',
-    zIndex: isDragging ? 1000 : 'auto',
+    // 自身は移動せず、元の位置にプレースホルダーとして薄く残す
+    opacity: isDragging ? 0.3 : 1,
+    cursor: isDragging ? 'grabbing' : 'grab',
+    touchAction: 'none', // モバイルブラウザ等でのスクロール競合防止
   };
 
   return (

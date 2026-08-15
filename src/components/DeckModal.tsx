@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
 import { MonsterSummary } from './MonsterSummary';
+import { DraggableMana } from './GameBoard/DraggableMana';
 
 interface DeckModalProps {
   isOpen: boolean;
@@ -151,7 +152,9 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                     boxSizing: 'border-box',
                   }}
                 >
-                  <Card card={card} />
+                  <DraggableMana mana={card} side={side} sourceZone='deck'>
+                    <Card card={card} />
+                  </DraggableMana>
                 </div>
               );
             })

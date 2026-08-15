@@ -2,8 +2,8 @@
 
 import React, { useState } from 'react';
 import type { MonsterCard, PlayerSide } from '../types';
-import { Card } from './Card';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
+import { MonsterWithMana } from './MonsterWithMana';
 
 interface MonsterZoneProps {
   monsters: MonsterCard[];
@@ -92,87 +92,17 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'space-between',
-                height: '100%', // 追加: DroppableSlot内で高さを適切に維持するため
+                height: '100%', // DroppableSlot内で高さを適切に維持するため
               }}
             >
               {/* --- モンスター画像と装備マナの重ね合わせ表示領域 --- */}
-              <div
-                style={{
-                  position: 'relative', // 絶対配置の基準
-                  width: '100%',
-                  aspectRatio: '63 / 88',
-                  marginBottom: '16px',
-                  marginTop: '8px',
-                }}
-              >
-                {/* 1. 背面：モンスター画像本体 */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    zIndex: 1, // 画像を奥に
-                    borderRadius: '4px',
-                    overflow: 'hidden',
-                    backgroundColor: '#f0f0f0',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                  }}
-                >
-                  {monster.imageUrl && (
-                    <img
-                      src={`${import.meta.env.BASE_URL}${(monster.isFlipped && monster.flippedImageUrl ? monster.flippedImageUrl : monster.imageUrl).replace(/^\//, '')}`}
-                      alt={monster.name}
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover',
-                      }}
-                    />
-                  )}
-                </div>
-
-                {/* 2. 前面：装備中のマナ一覧（はみ出し絶対配置） */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    zIndex: 2, // マナを手前に配置
-                    pointerEvents: 'none', // マナ以外の空白部分のクリックを透過させる
-                  }}
-                >
-                  {monster.equippedMana.map((mana, mIndex) => {
-                    // マスターデータ等で定義された position クラス（未定義の場合はデフォルトで左上等にフォールバック）
-                    const positionClass =
-                      monster.slotPositions && monster.slotPositions[mIndex]
-                        ? monster.slotPositions[mIndex]
-                        : 'slot-left-single';
-
-                    const isSelected = selectedManaIds.includes(mana.id);
-
-                    return (
-                      <div
-                        key={mana.id}
-                        className={`slot-item ${positionClass}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleSelectMana(mana.id);
-                        }}
-                        style={{
-                          pointerEvents: 'auto', // マナカード自体はクリック可能にする
-                          cursor: 'pointer',
-                          outline: isSelected ? '3px solid #ff4d4f' : 'none',
-                          borderRadius: '4px',
-                          transform: isSelected ? 'scale(1.05)' : undefined, // 各 CSS クラス内の transform と併用する場合は CSS 側で調整
-                          transition: 'transform 0.1s, outline 0.1s',
-                        }}
-                        title='クリックして選択/解除'
-                      >
-                        <Card card={mana} size='sm' />
-                      </div>
-                    );
-                  })}
-                </div>
+              <div style={{ marginBottom: '16px', marginTop: '8px' }}>
+                <MonsterWithMana
+                  monster={monster}
+                  selectedManaIds={selectedManaIds}
+                  onManaClick={handleToggleSelectMana}
+                />
               </div>
-              {/* -------------------------------------------------- */}
 
               {/* 操作ボタンエリア */}
               <div

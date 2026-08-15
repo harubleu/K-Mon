@@ -6,13 +6,17 @@ import { PlayerZone } from './components/PlayerZone';
 import { ActionArea } from './components/ActionArea';
 import { DeckBuilder } from './components/DeckBuilder/DeckBuilder';
 import { JankenModal } from './components/GameBoard/JankenModal';
+import { Card } from './components/Card'; // DragOverlay用
 import type { PlayerSide, ZoneType, MonsterCard, ManaCard } from './types'; // 必要な型を追加
 import {
   DndContext,
   type DragEndEvent,
+  type DragStartEvent,
+  DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
+  MeasuringStrategy,
 } from '@dnd-kit/core';
 
 export const App: React.FC = () => {
@@ -23,6 +27,13 @@ export const App: React.FC = () => {
   const [jankenPurpose, setJankenPurpose] = useState<'start' | 'battle'>(
     'start',
   );
+
+  const [activeDragData, setActiveDragData] = useState<{
+    manaCardId: string;
+    side: PlayerSide;
+    sourceZone: ZoneType;
+    mana?: ManaCard;
+  } | null>(null);
 
   // デッキ構築完了時のハンドラー
   const handleStartGame = (
@@ -179,13 +190,26 @@ export const App: React.FC = () => {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 5,
+        distance: 3, // 5から3に変更し、末尾要素でも即座に正しくドラッグを検知させる
       },
     }),
   );
 
+  const handleDragStart = (event: DragStartEvent) => {
+    const { active } = event;
+    const data = active.data.current as any;
+    if (data && data.manaCardId) {
+      setActiveDragData(data);
+    }
+  };
+
+  const handleDragCancel = () => {
+    setActiveDragData(null); // ドラッグ状態をリセット
+  };
+
   // 2. ドラッグ終了時のハンドラー
   const handleDragEnd = (event: DragEndEvent) => {
+    setActiveDragData(null); // ドラッグ状態をリセット
     const { active, over } = event;
     if (!over) return;
 
@@ -227,7 +251,17 @@ export const App: React.FC = () => {
   // --- 対戦画面 (サンドボックス) のレンダリング ---
   return (
     // 3. 対戦画面全体を <DndContext> で包む
-    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      measuring={{
+        droppable: {
+          strategy: MeasuringStrategy.Always,
+        },
+      }}
+      onDragEnd={handleDragEnd}
+      onDragStart={handleDragStart}
+      onDragCancel={handleDragCancel}
+    >
       <div
         style={{
           maxWidth: '1200px',
@@ -339,6 +373,20 @@ export const App: React.FC = () => {
           onDraw={handleAutoDraw}
         />
       </div>
+      {/* ドラッグ中の要素を最前面に描画するオーバーレイ */}
+      <DragOverlay zIndex={9999} dropAnimation={null}>
+        {activeDragData && activeDragData.mana ? (
+          <div
+            style={{
+              cursor: 'grabbing',
+              transform: 'scale(1.05)',
+              pointerEvents: 'none',
+            }}
+          >
+            <Card card={activeDragData.mana} />
+          </div>
+        ) : null}
+      </DragOverlay>
     </DndContext>
   );
 };
