@@ -165,7 +165,7 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
           monsters={monsters}
           label={label}
           side={side}
-          idPrefix='modal_draw_summary'
+          idPrefix='modal_cemetery_summary'
         />
 
         {/* カード一覧 */}

@@ -239,7 +239,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               monsters={playerState.monsters}
               label={label}
               side={side}
-              idPrefix='modal_draw_summary'
+              idPrefix='modal_pendingdraw_summary'
             />
 
             <div

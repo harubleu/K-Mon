@@ -1,6 +1,6 @@
 // src/App.tsx
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useGameState } from './hooks/useGameState';
 import { PlayerZone } from './components/PlayerZone';
 import { ActionArea } from './components/ActionArea';
@@ -8,15 +8,16 @@ import { DeckBuilder } from './components/DeckBuilder/DeckBuilder';
 import { JankenModal } from './components/GameBoard/JankenModal';
 import { Card } from './components/Card'; // DragOverlay用
 import type { PlayerSide, ZoneType, MonsterCard, ManaCard } from './types'; // 必要な型を追加
+import { createPortal } from 'react-dom';
 import {
   DndContext,
   type DragEndEvent,
   type DragStartEvent,
-  DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
   MeasuringStrategy,
+  pointerWithin,
 } from '@dnd-kit/core';
 
 export const App: React.FC = () => {
@@ -33,6 +34,15 @@ export const App: React.FC = () => {
     side: PlayerSide;
     sourceZone: ZoneType;
     mana?: ManaCard;
+  } | null>(null);
+
+  // 追加: 位置更新専用（stateを使わずrefで直接DOM操作する）
+  const overlayNodeRef = useRef<HTMLDivElement>(null);
+  const dragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  // 初回マウント時のちらつき防止用（更新はしない、初期値のみ）
+  const [dragStartPos, setDragStartPos] = useState<{
+    x: number;
+    y: number;
   } | null>(null);
 
   // デッキ構築完了時のハンドラー
@@ -196,20 +206,51 @@ export const App: React.FC = () => {
   );
 
   const handleDragStart = (event: DragStartEvent) => {
-    const { active } = event;
+    const { active, activatorEvent } = event;
     const data = active.data.current as any;
     if (data && data.manaCardId) {
       setActiveDragData(data);
     }
+
+    const rect = active.rect.current.initial;
+    const nativeEvent = activatorEvent as PointerEvent;
+    const clientX = nativeEvent.clientX ?? 0;
+    const clientY = nativeEvent.clientY ?? 0;
+
+    if (rect) {
+      dragOffsetRef.current = {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+      };
+    }
+    setDragStartPos({ x: clientX, y: clientY }); // 初期表示位置のみ。以降はrefで更新
   };
 
+  useEffect(() => {
+    if (!activeDragData) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const node = overlayNodeRef.current;
+      if (!node) return;
+      const { x: offsetX, y: offsetY } = dragOffsetRef.current;
+      node.style.transform = `translate3d(${e.clientX - offsetX}px, ${
+        e.clientY - offsetY
+      }px, 0)`;
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    return () => window.removeEventListener('pointermove', handlePointerMove);
+  }, [activeDragData]);
+
   const handleDragCancel = () => {
-    setActiveDragData(null); // ドラッグ状態をリセット
+    setActiveDragData(null);
+    setDragStartPos(null);
   };
 
   // 2. ドラッグ終了時のハンドラー
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveDragData(null); // ドラッグ状態をリセット
+    setDragStartPos(null);
     const { active, over } = event;
     if (!over) return;
 
@@ -253,9 +294,10 @@ export const App: React.FC = () => {
     // 3. 対戦画面全体を <DndContext> で包む
     <DndContext
       sensors={sensors}
+      collisionDetection={pointerWithin}
       measuring={{
         droppable: {
-          strategy: MeasuringStrategy.Always,
+          strategy: MeasuringStrategy.BeforeDragging,
         },
       }}
       onDragEnd={handleDragEnd}
@@ -373,20 +415,29 @@ export const App: React.FC = () => {
           onDraw={handleAutoDraw}
         />
       </div>
-      {/* ドラッグ中の要素を最前面に描画するオーバーレイ */}
-      <DragOverlay zIndex={9999} dropAnimation={null}>
-        {activeDragData && activeDragData.mana ? (
+
+      {activeDragData &&
+        activeDragData.mana &&
+        dragStartPos &&
+        createPortal(
           <div
+            ref={overlayNodeRef}
             style={{
-              cursor: 'grabbing',
-              transform: 'scale(1.05)',
+              position: 'fixed',
+              top: -15,
+              left: -20,
+              transform: `translate3d(${
+                dragStartPos.x - dragOffsetRef.current.x
+              }px, ${dragStartPos.y - dragOffsetRef.current.y}px, 0)`,
               pointerEvents: 'none',
+              zIndex: 9999,
+              willChange: 'transform',
             }}
           >
             <Card card={activeDragData.mana} />
-          </div>
-        ) : null}
-      </DragOverlay>
+          </div>,
+          document.body,
+        )}
     </DndContext>
   );
 };
