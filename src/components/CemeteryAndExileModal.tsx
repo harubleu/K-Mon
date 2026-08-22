@@ -266,6 +266,7 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
                 slotIndex={0}
                 slotName=''
                 idPrefix='modal_cemetery' // モーダル専用IDプレフィックス
+                style={{ aspectRatio: 'auto' }}
               >
                 <button
                   key={index}

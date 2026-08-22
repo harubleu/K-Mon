@@ -28,7 +28,7 @@ export interface MonsterCard {
   name: string;
   slots: string[]; // スロット（装備に必要な漢字/部首の配列）
   slotPositions?: string[];
-  equippedMana: ManaCard[];
+  equippedMana: (ManaCard | null)[];
   isFlipped: boolean;
   imageUrl?: string;
   flippedImageUrl?: string;

@@ -105,6 +105,7 @@ export const useDeckBuilder = () => {
         id: `${master.id}_${Date.now()}`,
         name: master.name,
         slots: master.slots,
+        slotPositions: master.slotPositions,
         equippedMana: [],
         isFlipped: false,
         imageUrl: master.imageUrl,

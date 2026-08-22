@@ -226,7 +226,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
               backgroundColor: 'white',
               padding: '24px',
               borderRadius: '8px',
-              maxWidth: '500px',
+              maxWidth: '700px',
               width: '90%',
               maxHeight: '90vh',
               overflowY: 'auto',
@@ -282,6 +282,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   slotIndex={0}
                   slotName=''
                   idPrefix='modal_draw' // モーダル専用IDプレフィックス
+                  style={{ aspectRatio: 'auto', width: '100%' }}
                 >
                   <button
                     key={monster.id}

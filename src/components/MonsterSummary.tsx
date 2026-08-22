@@ -2,7 +2,6 @@
 
 import React from 'react';
 import type { MonsterCard, PlayerSide } from '../types';
-import { DroppableSlot } from './PlayerZone/DroppableSlot';
 import { MonsterWithMana } from './MonsterWithMana';
 
 interface MonsterSummaryProps {
@@ -50,64 +49,62 @@ export const MonsterSummary: React.FC<MonsterSummaryProps> = ({
               flex: 1,
             }}
           >
-            <DroppableSlot
-              side={side}
-              monsterIndex={index}
-              slotIndex={0} // モンスター全体をドロップ対象とするため0を指定
-              slotName=''
-              idPrefix={idPrefix}
+            <div
+              style={{
+                border: '1px solid #ccc',
+                borderRadius: '6px',
+                padding: '8px',
+                backgroundColor: '#fff',
+                fontSize: '0.75rem',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                height: '100%',
+                boxSizing: 'border-box',
+              }}
             >
+              {/* モンスター名と面状態 */}
               <div
                 style={{
-                  border: '1px solid #ccc',
-                  borderRadius: '6px',
-                  padding: '8px',
-                  backgroundColor: '#fff',
-                  fontSize: '0.75rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  height: '100%',
-                  boxSizing: 'border-box',
+                  fontWeight: 'bold',
+                  marginBottom: '4px',
+                  textAlign: 'center',
+                  fontSize: '0.8rem',
                 }}
               >
-                {/* モンスター名と面状態 */}
-                <div
-                  style={{
-                    fontWeight: 'bold',
-                    marginBottom: '4px',
-                    textAlign: 'center',
-                    fontSize: '0.8rem',
-                  }}
-                >
-                  {monster.name} {monster.isFlipped ? '(裏面)' : ''}
-                </div>
-
-                {/* 修正: スロット情報のテキスト表示を追加 */}
-                <div
-                  style={{
-                    color: '#555',
-                    fontSize: '0.7rem',
-                    marginBottom: '8px',
-                    textAlign: 'center',
-                  }}
-                >
-                  スロット:{' '}
-                  {monster.slots.length > 0 ? monster.slots.join(', ') : 'なし'}
-                </div>
-
-                {/* 修正: 共通コンポーネントを使用した画像とマナの重ね合わせ */}
-                <div
-                  style={{
-                    width: '100%',
-                    maxWidth: '130px',
-                    marginBottom: '8px',
-                  }}
-                >
-                  <MonsterWithMana monster={monster} />
-                </div>
+                {monster.name} {monster.isFlipped ? '(裏面)' : ''}
               </div>
-            </DroppableSlot>
+
+              {/* スロット情報のテキスト表示 */}
+              <div
+                style={{
+                  color: '#555',
+                  fontSize: '0.7rem',
+                  marginBottom: '8px',
+                  textAlign: 'center',
+                }}
+              >
+                スロット:{' '}
+                {monster.slots.length > 0 ? monster.slots.join(', ') : 'なし'}
+              </div>
+
+              {/* 共通コンポーネントを使用した画像とマナの重ね合わせ */}
+              <div
+                style={{
+                  width: '100%',
+                  maxWidth: '130px',
+                  marginBottom: '8px',
+                }}
+              >
+                <MonsterWithMana
+                  monster={monster}
+                  side={side}
+                  monsterIndex={index}
+                  isDroppable={true}
+                  idPrefix={idPrefix}
+                />
+              </div>
+            </div>
           </div>
         ))}
       </div>

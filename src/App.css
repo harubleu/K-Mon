@@ -204,7 +204,7 @@
 .slot-center-middle {
   top: 50%;
   left: 50%;
-  transform: translate(0%, 0%);
+  transform: translate(-50%, -50%);
 }
 
 /* --- 2×1 （左右2分割）--- */
@@ -212,14 +212,14 @@
 .slot-left-middle {
   top: 50%;
   left: 0;
-  transform: translate(-60%, -50%);
+  transform: translate(-40%, -50%);
 }
 
 /* 右辺1枚 */
 .slot-right-middle {
   top: 50%;
   right: 0;
-  transform: translate(60%, -50%);
+  transform: translate(40%, -50%);
 }
 
 /* --- 1×2 （上下2分割）--- */
@@ -227,85 +227,114 @@
 .slot-center-upper {
   top: 0;
   left: 50%;
-  transform: translate(-50%, -60%);
+  transform: translate(-50%, -15%);
 }
 
 /* 下辺1枚 */
 .slot-center-lower {
   bottom: 0;
   left: 50%;
-  transform: translate(-50%, 60%);
+  transform: translate(-50%, 15%);
 }
 
 /* --- 2×2 （左右2分割×上下2分割）--- */
 
 /* 左辺2分割（上・下） */
 .slot-left-upper {
-  top: 10%;
+  top: 0%;
   left: 0;
-  transform: translateX(-60%);
+  transform: translate(-40%, -15%);
 }
 
 .slot-left-lower {
-  bottom: 10%;
+  bottom: 0%;
   left: 0;
-  transform: translateX(-60%);
+  transform: translate(-40%, 15%);
 }
 
 /* 右辺2分割（上・下） */
 .slot-right-upper {
-  top: 10%;
+  top: 0%;
   right: 0;
-  transform: translateX(60%);
+  transform: translate(40%, -15%);
 }
 
 .slot-right-lower {
-  bottom: 10%;
+  bottom: 0%;
   right: 0;
-  transform: translateX(60%);
+  transform: translate(40%, 15%);
 }
 
 /* --- 1×3 （上下3分割）--- */
 .slot-center-top {
-  top: -5%;
+  top: 0%;
   left: 0;
-  transform: translateX(-60%);
+  transform: translate(-50%, -65%);
 }
 
 /*.slot-center-middle */
 
 .slot-center-bottom {
-  bottom: -5%;
+  bottom: 0%;
   left: 0;
-  transform: translateX(-60%);
+  transform: translate(-50%,65%);
 }
 
 /* 左辺3分割（上・中・下） */
 .slot-left-top {
-  top: -5%;
+  top: 0%;
   left: 0;
-  transform: translateX(-60%);
+  transform: translate(-40%,-65%);  
 }
 
 /* .slot-left-middle */
 
 .slot-left-bottom {
-  bottom: -5%;
+  bottom: 0%;
   left: 0;
-  transform: translateX(-60%);
+  transform: translate(-40%,65%);
 }
 
 /* 右辺3分割（上・中・下） */
 .slot-right-top {
-  top: -5%;
+  top: 0%;
   right: 0;
-  transform: translateX(60%);
+  transform: translate(40%,-65%);
 }
 
 /* .slot-right-middle */
 
 .slot-right-bottom {
-  bottom: -5%;
+  bottom: 0cap;
   right: 0;
-  transform: translateX(60%);
+  transform: translate(40%,65%);
+}
+
+/* --- 裏面スロット等の内側ピッタリ配置用クラス（画像の赤枠を再現） --- */
+.slot-inside-upper {
+  position: absolute;
+  top: 4%;
+  left: 4%;
+  width: 92%;
+  height: 44%;
+  z-index: 10;
+}
+
+.slot-inside-lower {
+  position: absolute;
+  bottom: 4%;
+  left: 4%;
+  width: 92%;
+  height: 44%;
+  z-index: 10;
+}
+
+/* マナカード自体を親枠（DroppableSlot）の100%サイズにフィットさせるためのクラス */
+.mana-fit-to-slot {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
+  /* 画像の比率を維持しつつ枠を埋める */
+  border-radius: 6px;
+  display: block;
 }

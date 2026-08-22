@@ -1,8 +1,7 @@
 // src/components/MonsterZone.tsx
 
 import React, { useState } from 'react';
-import type { MonsterCard, PlayerSide } from '../types';
-import { DroppableSlot } from './PlayerZone/DroppableSlot';
+import type { MonsterCard, PlayerSide, ManaCard } from '../types';
 import { MonsterWithMana } from './MonsterWithMana';
 
 interface MonsterZoneProps {
@@ -44,7 +43,9 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
     monsterIndex: number,
     destination: 'cemetery' | 'exile',
   ) => {
-    const monsterManaIds = monsters[monsterIndex].equippedMana.map((m) => m.id);
+    const monsterManaIds = monsters[monsterIndex].equippedMana
+      .filter((m): m is ManaCard => m !== null)
+      .map((m) => m.id);
     const targetIds = selectedManaIds.filter((id) =>
       monsterManaIds.includes(id),
     );
@@ -60,7 +61,7 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
     <div
       style={{
         display: 'flex',
-        gap: '24px', // はみ出しマナが重なり合わないよう少し間隔を広げる
+        gap: '100px', // はみ出しマナが重なり合わないよう少し間隔を広げる
         justifyContent: 'center',
         flexGrow: 1,
         padding: '20px 0',
@@ -68,113 +69,111 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
     >
       {monsters.map((monster, index) => {
         // このモンスターに装備されているマナのうち、選択されているもののID
-        const monsterManaIds = monster.equippedMana.map((m) => m.id);
+        const monsterManaIds = monster.equippedMana
+          .filter((m): m is ManaCard => m !== null)
+          .map((m) => m.id);
         const selectedInThisMonster = selectedManaIds.filter((id) =>
           monsterManaIds.includes(id),
         );
 
         return (
-          <DroppableSlot
-            key={monster.id || index}
-            side={side}
-            monsterIndex={index}
-            slotIndex={0} // 仮置き: 今回はモンスター全体をターゲット(Index 0)とする
-            slotName='' // 既存のUIレイアウトを維持するため空文字を指定
-            disabled={isDropDisabled} // モーダル表示中などにドロップを無効化
+          <div
+            key={`monster-card-${monster.id}-${index}`}
+            style={{
+              border: '2px solid #333',
+              borderRadius: '8px',
+              padding: '8px',
+              width: '180px',
+              backgroundColor: monster.isFlipped ? '#e0e0e0' : '#ffffff',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              height: '100%', // DroppableSlot内で高さを適切に維持するため
+            }}
           >
+            {/* --- モンスター画像と装備マナの重ね合わせ表示領域 --- */}
+            <div style={{ marginBottom: '16px', marginTop: '8px' }}>
+              <MonsterWithMana
+                monster={monster}
+                selectedManaIds={selectedManaIds}
+                onManaClick={handleToggleSelectMana}
+                side={side}
+                monsterIndex={index}
+                isDroppable={!isDropDisabled}
+                idPrefix='main_zone'
+              />
+            </div>
+
+            {/* 操作ボタンエリア */}
             <div
-              style={{
-                border: '2px solid #333',
-                borderRadius: '8px',
-                padding: '8px',
-                width: '180px',
-                backgroundColor: monster.isFlipped ? '#e0e0e0' : '#ffffff',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-                height: '100%', // DroppableSlot内で高さを適切に維持するため
-              }}
+              style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
             >
-              {/* --- モンスター画像と装備マナの重ね合わせ表示領域 --- */}
-              <div style={{ marginBottom: '16px', marginTop: '8px' }}>
-                <MonsterWithMana
-                  monster={monster}
-                  selectedManaIds={selectedManaIds}
-                  onManaClick={handleToggleSelectMana}
-                />
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button
+                  onClick={() => onEquipMana(side, index)}
+                  style={{
+                    flex: 1,
+                    fontSize: '0.75rem',
+                    padding: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  山札から装備
+                </button>
+                <button
+                  onClick={() => onFlipMonster(side, index)}
+                  style={{
+                    flex: 1,
+                    fontSize: '0.75rem',
+                    padding: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  反転
+                </button>
               </div>
 
-              {/* 操作ボタンエリア */}
-              <div
-                style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
-              >
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <button
-                    onClick={() => onEquipMana(side, index)}
-                    style={{
-                      flex: 1,
-                      fontSize: '0.75rem',
-                      padding: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    山札から装備
-                  </button>
-                  <button
-                    onClick={() => onFlipMonster(side, index)}
-                    style={{
-                      flex: 1,
-                      fontSize: '0.75rem',
-                      padding: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    反転
-                  </button>
-                </div>
-
-                {/* 選択中のマナ操作ボタン */}
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <button
-                    onClick={() => handleMoveSelectedMana(index, 'cemetery')}
-                    disabled={selectedInThisMonster.length === 0}
-                    style={{
-                      flex: 1,
-                      fontSize: '0.7rem',
-                      padding: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    選択破棄
-                  </button>
-                  <button
-                    onClick={() => handleMoveSelectedMana(index, 'exile')}
-                    disabled={selectedInThisMonster.length === 0}
-                    style={{
-                      flex: 1,
-                      fontSize: '0.7rem',
-                      padding: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    選択除外
-                  </button>
-                </div>
-
+              {/* 選択中のマナ操作ボタン */}
+              <div style={{ display: 'flex', gap: '4px' }}>
                 <button
-                  onClick={() => onTrashMana(side, index, 'all', 'cemetery')}
-                  disabled={monster.equippedMana.length === 0}
+                  onClick={() => handleMoveSelectedMana(index, 'cemetery')}
+                  disabled={selectedInThisMonster.length === 0}
                   style={{
+                    flex: 1,
                     fontSize: '0.7rem',
                     padding: '4px',
                     cursor: 'pointer',
                   }}
                 >
-                  全マナ破棄(墓地)
+                  選択破棄
+                </button>
+                <button
+                  onClick={() => handleMoveSelectedMana(index, 'exile')}
+                  disabled={selectedInThisMonster.length === 0}
+                  style={{
+                    flex: 1,
+                    fontSize: '0.7rem',
+                    padding: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  選択除外
                 </button>
               </div>
+
+              <button
+                onClick={() => onTrashMana(side, index, 'all', 'cemetery')}
+                disabled={monster.equippedMana.length === 0}
+                style={{
+                  fontSize: '0.7rem',
+                  padding: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                全マナ破棄(墓地)
+              </button>
             </div>
-          </DroppableSlot>
+          </div>
         );
       })}
     </div>

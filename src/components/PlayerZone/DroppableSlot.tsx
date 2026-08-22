@@ -5,25 +5,31 @@ import { useDroppable } from '@dnd-kit/core';
 import type { PlayerSide } from '../../types';
 
 interface DroppableSlotProps {
-  side: PlayerSide;
-  monsterIndex: number;
-  slotIndex: number;
-  slotName: string;
+  id?: string; // 外部からの明示的なID指定
+  side?: PlayerSide;
+  monsterIndex?: number;
+  slotIndex?: number;
+  slotName?: string;
   disabled?: boolean; // モーダル表示中などに無効化するためのプロパティ
   idPrefix?: string;
+  positionClass?: string; // 配置用のCSSクラスを受け取る
+  style?: React.CSSProperties; // 外部からのインラインスタイル指定
   children?: React.ReactNode;
 }
 
 export const DroppableSlot: React.FC<DroppableSlotProps> = ({
+  id,
   side,
   monsterIndex,
   slotIndex,
-  slotName,
+  slotName = '',
   disabled = false,
   idPrefix = 'slot', // ← デフォルト設定
+  positionClass = '',
+  style,
   children,
 }) => {
-  const droppableId = `${idPrefix}_${side}_${monsterIndex}_${slotIndex}`;
+  const droppableId = id || `${idPrefix}_${side}_${monsterIndex}_${slotIndex}`;
 
   const { isOver, setNodeRef } = useDroppable({
     id: droppableId,
@@ -37,21 +43,45 @@ export const DroppableSlot: React.FC<DroppableSlotProps> = ({
   });
 
   const highlightStyle: React.CSSProperties = {
-    border: isOver ? '3px solid #4CAF50' : '3px solid transparent',
-    backgroundColor: isOver ? 'rgba(76, 175, 80, 0.2)' : 'transparent',
+    ...style,
+    border: children
+      ? 'none'
+      : isOver && !disabled
+        ? '3px solid rgba(255, 215, 0, 1)'
+        : '2px dashed rgba(255, 255, 255, 0.5)',
+    backgroundColor:
+      isOver && !disabled ? 'rgba(255, 215, 0, 0.4)' : 'transparent',
     transition: 'all 0.2s ease',
     borderRadius: '8px',
-    height: '100%',
     boxSizing: 'border-box',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'auto', // 親要素が pointer-events: none の場合でも、枠自身はD&D対象として反応させる
+    aspectRatio: style?.aspectRatio || '1 / 1', // styleでaspectRatioが指定されている場合はそちらを優先
   };
 
   return (
     <div
       ref={setNodeRef}
       style={highlightStyle}
-      className='droppable-slot-target'
+      className={`droppable-slot-target ${positionClass}`}
     >
-      <span className='slot-label'>{slotName}</span>
+      {/* マナが装備されていない時だけラベルを表示 */}
+      {!children && (
+        <span
+          className='slot-label'
+          style={{
+            fontSize: '0.7rem',
+            color: '#fff',
+            textShadow: '1px 1px 2px #000',
+          }}
+        >
+          {slotName}
+        </span>
+      )}
+
+      {/* 装備されたマナカードを枠いっぱいに広げるコンテナ */}
       {children}
     </div>
   );

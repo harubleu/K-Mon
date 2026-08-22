@@ -130,12 +130,21 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const [drawnCard, ...remainingDeck] = player.deck;
 
       const updatedMonsters = [...player.monsters];
+      const monster = updatedMonsters[monsterIndex];
+
+      const newEquippedMana = [...monster.equippedMana];
+      // 【修正】最初の空きスロット（null）を探す
+      const emptyIndex = newEquippedMana.findIndex((m) => m === null);
+
+      if (emptyIndex !== -1) {
+        newEquippedMana[emptyIndex] = drawnCard; // 空き枠に装備
+      } else {
+        newEquippedMana.push(drawnCard); // 空きがなければ末尾に追加
+      }
+
       updatedMonsters[monsterIndex] = {
-        ...updatedMonsters[monsterIndex],
-        equippedMana: [
-          ...updatedMonsters[monsterIndex].equippedMana,
-          drawnCard,
-        ],
+        ...monster,
+        equippedMana: newEquippedMana,
       };
 
       return {
@@ -156,17 +165,23 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       if (monster.equippedMana.length === 0) return state;
 
       let trashedCards: ManaCard[] = [];
-      let remainingMana: ManaCard[] = [];
+      let remainingMana: (ManaCard | null)[] = [];
 
       if (manaCardIds === 'all') {
-        trashedCards = [...monster.equippedMana];
-        remainingMana = [];
-      } else {
-        trashedCards = monster.equippedMana.filter((m) =>
-          manaCardIds.includes(m.id),
+        // 【修正】nullを除外して実際に存在するカードだけを抽出
+        trashedCards = monster.equippedMana.filter(
+          (m): m is ManaCard => m !== null,
         );
-        remainingMana = monster.equippedMana.filter(
-          (m) => !manaCardIds.includes(m.id),
+        // 【修正】枠の数だけnullで埋める（スロット位置を維持するため）
+        remainingMana = new Array(monster.equippedMana.length).fill(null);
+      } else {
+        // 【修正】指定されたカードのみ抽出し、TypeScriptの型を確定させる
+        trashedCards = monster.equippedMana.filter(
+          (m): m is ManaCard => m !== null && manaCardIds.includes(m.id),
+        );
+        // 【修正】指定されたカードIDの箇所のみ null に置換し、それ以外（位置情報含む）はそのまま残す
+        remainingMana = monster.equippedMana.map((m) =>
+          m !== null && manaCardIds.includes(m.id) ? null : m,
         );
       }
 
@@ -262,8 +277,16 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         monsterIndex,
         sourceZone = 'deck',
         manaCardId,
+        targetSlotIndex,
       } = action.payload;
       const player = state[side];
+      if (!player) {
+        console.warn(
+          '[EQUIP_SPECIFIC_MANA] 不正な side が渡されたため処理を中断しました:',
+          action.payload,
+        );
+        return state;
+      }
 
       // 移動元の配列を安全に取得 (pending対応)
       const sourceKey =
@@ -277,9 +300,29 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const updatedMonsters = player.monsters.map((monster, index) => {
         if (index !== monsterIndex) return monster;
+
+        const newEquippedMana = [...monster.equippedMana];
+
+        // 【修正】targetSlotIndex が指定されている場合、その位置にピンポイントで配置
+        if (targetSlotIndex !== undefined) {
+          // 配列長が指定インデックスに満たない場合は null でパディングして枠を拡張する
+          while (newEquippedMana.length <= targetSlotIndex) {
+            newEquippedMana.push(null);
+          }
+          newEquippedMana[targetSlotIndex] = cardToEquip;
+        } else {
+          // 指定がない場合は最初の空き枠か末尾に追加
+          const emptyIndex = newEquippedMana.findIndex((m) => m === null);
+          if (emptyIndex !== -1) {
+            newEquippedMana[emptyIndex] = cardToEquip;
+          } else {
+            newEquippedMana.push(cardToEquip);
+          }
+        }
+
         return {
           ...monster,
-          equippedMana: [...monster.equippedMana, cardToEquip],
+          equippedMana: newEquippedMana,
         };
       });
 

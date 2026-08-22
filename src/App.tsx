@@ -1,5 +1,7 @@
 // src/App.tsx
 
+import './App.css';
+
 import React, { useState, useRef, useEffect } from 'react';
 import { useGameState } from './hooks/useGameState';
 import { PlayerZone } from './components/PlayerZone';
@@ -270,7 +272,12 @@ export const App: React.FC = () => {
         }
       | undefined;
 
-    if (activeData && overData) {
+    if (
+      activeData &&
+      overData &&
+      overData.side &&
+      overData.monsterIndex !== undefined
+    ) {
       dispatch({
         type: 'EQUIP_SPECIFIC_MANA',
         payload: {
@@ -281,6 +288,15 @@ export const App: React.FC = () => {
           targetSlotIndex: overData.slotIndex,
         },
       });
+    } else if (activeData || overData) {
+      console.warn(
+        '[handleDragEnd] side/monsterIndexが不足しているため中断しました。over.id:',
+        over.id,
+        'overData:',
+        overData,
+        'activeData:',
+        activeData,
+      );
     }
   };
 
@@ -306,7 +322,7 @@ export const App: React.FC = () => {
     >
       <div
         style={{
-          maxWidth: '1200px',
+          maxWidth: '1600px',
           margin: '0 auto',
           padding: '0 16px 16px 16px',
           fontFamily: 'sans-serif',

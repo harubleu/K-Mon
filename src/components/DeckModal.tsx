@@ -93,7 +93,7 @@ export const DeckModal: React.FC<DeckModalProps> = ({
           backgroundColor: '#fff',
           padding: '20px',
           borderRadius: '8px',
-          maxWidth: '600px',
+          maxWidth: '700px',
           width: '90%',
           maxHeight: '85vh',
           display: 'flex',

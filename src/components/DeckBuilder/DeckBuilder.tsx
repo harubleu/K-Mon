@@ -48,7 +48,7 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({ onStartGame }) => {
   };
 
   return (
-    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+    <div style={{ padding: '20px', maxWidth: '1600px', margin: '0 auto' }}>
       <div
         style={{
           display: 'flex',
