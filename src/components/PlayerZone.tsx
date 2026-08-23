@@ -43,7 +43,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   playerState,
   side,
   label,
-  onEquipMana,
+  //onEquipMana,
   onTrashMana,
   onFlipMonster,
   onRecover,
