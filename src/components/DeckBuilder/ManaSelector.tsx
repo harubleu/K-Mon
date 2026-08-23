@@ -18,7 +18,6 @@ export const ManaSelector: React.FC<ManaSelectorProps> = ({
   isAutoFillDisabled,
   selectedMonsterIds,
 }) => {
-  // 選択されたモンスターが必要とするマナ（漢字）のセットを作成
   const requiredKanjiSet = useMemo(() => {
     const kanjiList = selectedMonsterIds.flatMap((id) => {
       const monster = MONSTER_MASTER_LIST.find((m) => m.id === id);
@@ -63,12 +62,12 @@ export const ManaSelector: React.FC<ManaSelectorProps> = ({
             bgStyle = {
               backgroundColor: '#e3f2fd',
               boxShadow: '0 0 0 2px #007bff',
-            }; // 選択中（青枠）
+            };
           } else if (requiredKanjiSet.has(mana.kanji)) {
             bgStyle = {
               backgroundColor: '#fff9c4',
               boxShadow: '0 2px 8px rgba(255, 215, 0, 0.5)',
-            }; // 強い相関（黄色）
+            };
           }
 
           return (

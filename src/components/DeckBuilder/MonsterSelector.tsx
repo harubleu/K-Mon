@@ -14,7 +14,31 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
   onToggleMonster,
   manaCounts,
 }) => {
-  const [activeFolder, setActiveFolder] = useState<string>('すべて');
+  // 【修正】初期タブを「すべて」ではなく最初の弾にする
+  const [activeFolder, setActiveFolder] = useState<string>('第1弾_キホンのキ');
+
+  // 【追加】プレビュー用の反転状態（実ゲーム状態には影響しない、選択画面だけのローカル状態）
+  const [previewFlippedIds, setPreviewFlippedIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [allFlipped, setAllFlipped] = useState(false);
+
+  const toggleGlobalFlip = () => {
+    setAllFlipped((prev) => !prev);
+    setPreviewFlippedIds(new Set()); // 個別上書きをリセットし、全体設定を優先させる
+  };
+
+  const toggleIndividualFlip = (e: React.MouseEvent, monsterId: string) => {
+    e.stopPropagation(); // 親divのonToggleMonsterと競合しないようにする
+    setPreviewFlippedIds((prev) => {
+      const next = new Set(prev);
+      next.has(monsterId) ? next.delete(monsterId) : next.add(monsterId);
+      return next;
+    });
+  };
+
+  const isPreviewFlipped = (monsterId: string) =>
+    previewFlippedIds.has(monsterId) ? !allFlipped : allFlipped;
 
   const folders = useMemo(() => {
     const folderNames = Array.from(
@@ -34,7 +58,29 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
 
   return (
     <section>
-      <h3 style={{ marginTop: 0 }}>1. モンスター選択（3体）</h3>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: '12px',
+        }}
+      >
+        <h3 style={{ margin: 0 }}>1. モンスター選択（3体）</h3>
+        {/* 【追加】一括反転ボタン */}
+        <button
+          onClick={toggleGlobalFlip}
+          style={{
+            padding: '6px 12px',
+            fontSize: '0.8rem',
+            cursor: 'pointer',
+            borderRadius: '4px',
+            border: '1px solid #ccc',
+          }}
+        >
+          {allFlipped ? 'すべて表面に戻す' : 'すべて裏面で確認'}
+        </button>
+      </div>
 
       {/* フォルダタブ */}
       <div
@@ -76,7 +122,10 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
         }}
       >
         {filteredMonsters.map((monster) => {
-          const isSelected = selectedMonsterIds.includes(monster.id);
+          const selectionOrder = selectedMonsterIds.indexOf(monster.id); // -1 = 未選択
+          const isSelected = selectionOrder !== -1;
+          const isFlippedPreview = isPreviewFlipped(monster.id);
+
           let bgStyle = {
             backgroundColor: '#fff',
             boxShadow: 'none',
@@ -91,22 +140,18 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
             };
           } else if (hasSelectedMana) {
             const requiredKanji = monster.slots;
-            // 選択しているマナ全てで構成できるか（モンスターのスロットが、選択中のマナ種類のサブセットか）
             const isAllCovered = requiredKanji.every((k) => manaCounts[k] > 0);
-            // 一部でも選択中のマナを含むか
             const isPartiallyCovered = requiredKanji.some(
               (k) => manaCounts[k] > 0,
             );
 
             if (isAllCovered) {
-              // 強い相関（黄色背景影）
               bgStyle = {
                 backgroundColor: '#fff9c4',
                 boxShadow: '0 4px 12px rgba(255, 215, 0, 0.6)',
                 border: '2px solid transparent',
               };
             } else if (isPartiallyCovered) {
-              // 弱い相関（白色背景影・視認性のため少しグレーに浮かせる）
               bgStyle = {
                 backgroundColor: '#ffffff',
                 boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
@@ -114,6 +159,10 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
               };
             }
           }
+
+          const currentImageUrl = isFlippedPreview
+            ? monster.flippedImageUrl
+            : monster.imageUrl;
 
           return (
             <div
@@ -131,7 +180,7 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
               title={`${monster.name} / 必要スロット: ${monster.slots.join(', ')}`}
             >
               <img
-                src={`${import.meta.env.BASE_URL}${monster.imageUrl?.replace(/^\//, '')}`}
+                src={`${import.meta.env.BASE_URL}${currentImageUrl?.replace(/^\//, '')}`}
                 alt={monster.name}
                 style={{
                   width: '100%',
@@ -140,6 +189,33 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
                   display: 'block',
                 }}
               />
+
+              {/* 【追加】反転専用アイコン（左上、クリックイベントを親から分離） */}
+              <button
+                onClick={(e) => toggleIndividualFlip(e, monster.id)}
+                title='表裏を切り替え'
+                style={{
+                  position: 'absolute',
+                  top: '-8px',
+                  left: '-8px',
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '50%',
+                  backgroundColor: '#555',
+                  color: '#fff',
+                  border: '2px solid #fff',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 0,
+                }}
+              >
+                ⟳
+              </button>
+
+              {/* 【修正】✓ではなく選択順の番号を表示 */}
               {isSelected && (
                 <div
                   style={{
@@ -155,9 +231,10 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
                     justifyContent: 'center',
                     alignItems: 'center',
                     fontWeight: 'bold',
+                    fontSize: '0.85rem',
                   }}
                 >
-                  ✓
+                  {selectionOrder + 1}
                 </div>
               )}
             </div>

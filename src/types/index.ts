@@ -57,8 +57,9 @@ export interface GameState {
 export interface PresetDeck {
   id: string;
   name: string;
-  monsterIds: string[]; // 3体のモンスターID
-  manaCounts: Record<string, number>; // 漢字ごとのマナ枚数
+  folder: string;
+  monsterIds: string[];
+  manaCounts: Record<string, number>;
 }
 
 // --- Action Payload インターフェース ---

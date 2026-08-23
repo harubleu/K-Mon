@@ -4,6 +4,7 @@ import './App.css';
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useGameState } from './hooks/useGameState';
+import { useDeckBuilder } from './hooks/useDeckBuilder';
 import { PlayerZone } from './components/PlayerZone';
 import { ActionArea } from './components/ActionArea';
 import { DeckBuilder } from './components/DeckBuilder/DeckBuilder';
@@ -23,6 +24,8 @@ import {
 } from '@dnd-kit/core';
 
 export const App: React.FC = () => {
+  const playerBuilder = useDeckBuilder();
+  const opponentBuilder = useDeckBuilder();
   const { gameState, dispatch, undo, canUndo, redo, canRedo } = useGameState();
   // 画面の切り替え状態を管理 (true: デッキ構築画面, false: 対戦画面)
   const [isBuildingDeck, setIsBuildingDeck] = useState(true);
@@ -302,7 +305,13 @@ export const App: React.FC = () => {
 
   // --- デッキ構築画面のレンダリング ---
   if (isBuildingDeck) {
-    return <DeckBuilder onStartGame={handleStartGame} />;
+    return (
+      <DeckBuilder
+        playerBuilder={playerBuilder}
+        opponentBuilder={opponentBuilder}
+        onStartGame={handleStartGame}
+      />
+    );
   }
 
   // --- 対戦画面 (サンドボックス) のレンダリング ---
@@ -343,6 +352,10 @@ export const App: React.FC = () => {
             marginBottom: '12px',
           }}
         >
+          <button onClick={() => setIsBuildingDeck(true)}>
+            ← デッキ構築に戻る
+          </button>
+
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
               onClick={undo}

@@ -15,6 +15,7 @@ interface DroppableSlotProps {
   positionClass?: string; // 配置用のCSSクラスを受け取る
   style?: React.CSSProperties; // 外部からのインラインスタイル指定
   children?: React.ReactNode;
+  hideIdleBorder?: boolean; // 通常時は枠線・背景を消し、ドラッグオーバー時だけ表示する
 }
 
 export const DroppableSlot: React.FC<DroppableSlotProps> = ({
@@ -28,6 +29,7 @@ export const DroppableSlot: React.FC<DroppableSlotProps> = ({
   positionClass = '',
   style,
   children,
+  hideIdleBorder = false,
 }) => {
   const droppableId = id || `${idPrefix}_${side}_${monsterIndex}_${slotIndex}`;
 
@@ -48,7 +50,9 @@ export const DroppableSlot: React.FC<DroppableSlotProps> = ({
       ? 'none'
       : isOver && !disabled
         ? '3px solid rgba(255, 215, 0, 1)'
-        : '2px dashed rgba(255, 255, 255, 0.5)',
+        : hideIdleBorder
+          ? 'none'
+          : '2px dashed rgba(255, 255, 255, 0.5)',
     backgroundColor:
       isOver && !disabled ? 'rgba(255, 215, 0, 0.4)' : 'transparent',
     transition: 'all 0.2s ease',

@@ -311,12 +311,23 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           }
           newEquippedMana[targetSlotIndex] = cardToEquip;
         } else {
-          // 指定がない場合は最初の空き枠か末尾に追加
-          const emptyIndex = newEquippedMana.findIndex((m) => m === null);
-          if (emptyIndex !== -1) {
-            newEquippedMana[emptyIndex] = cardToEquip;
+          // ボタン経由など枠指定がない場合、まずは monster.slots の漢字と一致する空き枠を優先的に探す。
+          // 見つからなければ従来通り最初の空き枠にフォールバックする。
+          const matchingEmptyIndex = monster.slots.findIndex(
+            (requiredKanji, i) =>
+              requiredKanji === cardToEquip.kanji &&
+              newEquippedMana[i] === null,
+          );
+
+          if (matchingEmptyIndex !== -1) {
+            newEquippedMana[matchingEmptyIndex] = cardToEquip;
           } else {
-            newEquippedMana.push(cardToEquip);
+            const emptyIndex = newEquippedMana.findIndex((m) => m === null);
+            if (emptyIndex !== -1) {
+              newEquippedMana[emptyIndex] = cardToEquip;
+            } else {
+              newEquippedMana.push(cardToEquip);
+            }
           }
         }
 

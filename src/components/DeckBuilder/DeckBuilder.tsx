@@ -4,10 +4,13 @@ import React, { useState } from 'react';
 import { useDeckBuilder } from '../../hooks/useDeckBuilder';
 import { MonsterSelector } from './MonsterSelector';
 import { ManaSelector } from './ManaSelector';
-import { PRESET_DECKS } from '../../data/presetDecks';
 import type { ManaCard, MonsterCard } from '../../types';
+import { PresetDeckPanel } from './PresetDeckPanel';
+import { SelectionSidebar } from './SelectionSidebar';
 
 interface DeckBuilderProps {
+  playerBuilder: ReturnType<typeof useDeckBuilder>;
+  opponentBuilder: ReturnType<typeof useDeckBuilder>;
   onStartGame: (
     playerMonsters: MonsterCard[],
     playerDeck: ManaCard[],
@@ -16,12 +19,12 @@ interface DeckBuilderProps {
   ) => void;
 }
 
-export const DeckBuilder: React.FC<DeckBuilderProps> = ({ onStartGame }) => {
+export const DeckBuilder: React.FC<DeckBuilderProps> = ({
+  playerBuilder,
+  opponentBuilder,
+  onStartGame,
+}) => {
   const [activeTab, setActiveTab] = useState<'player' | 'opponent'>('player');
-
-  // 自分用と相手用の構築状態を独立して管理
-  const playerBuilder = useDeckBuilder();
-  const opponentBuilder = useDeckBuilder();
 
   const currentBuilder =
     activeTab === 'player' ? playerBuilder : opponentBuilder;
@@ -128,52 +131,13 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({ onStartGame }) => {
           border: '1px solid #dee2e6',
         }}
       >
-        <div
-          style={{
-            marginBottom: '20px',
-            padding: '12px',
-            backgroundColor: '#fff',
-            borderRadius: '8px',
-            border: '1px solid #ccc',
-          }}
-        >
-          <h3 style={{ marginTop: 0, fontSize: '1rem' }}>
-            オススメデッキ（プリセット）から選ぶ
-          </h3>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {PRESET_DECKS.map((preset) => (
-              <button
-                key={preset.id}
-                onClick={() => currentBuilder.loadPreset(preset)}
-                style={{
-                  padding: '6px 12px',
-                  cursor: 'pointer',
-                  borderRadius: '4px',
-                  border: '1px solid #ccc',
-                }}
-              >
-                {preset.name}
-              </button>
-            ))}
-            <button
-              onClick={currentBuilder.clearDeck}
-              style={{
-                padding: '6px 12px',
-                cursor: 'pointer',
-                borderRadius: '4px',
-                border: '1px solid #dc3545',
-                color: '#dc3545',
-                marginLeft: 'auto',
-              }}
-            >
-              全てクリア
-            </button>
-          </div>
-        </div>
+        <PresetDeckPanel
+          onLoadPreset={currentBuilder.loadPreset}
+          onClearDeck={currentBuilder.clearDeck}
+        />
 
-        {/* 左右分割レイアウト */}
+        {/* 左右3分割レイアウト */}
         <div style={{ display: 'flex', gap: '24px' }}>
-          {/* 左側: モンスター選択 */}
           <div
             style={{
               flex: '3',
@@ -190,7 +154,6 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({ onStartGame }) => {
             />
           </div>
 
-          {/* 右側: マナ選択 */}
           <div
             style={{
               flex: '2',
@@ -208,6 +171,12 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({ onStartGame }) => {
               selectedMonsterIds={currentBuilder.recipe.monsterIds}
             />
           </div>
+
+          {/* 選択状況サイドパネル */}
+          <SelectionSidebar
+            monsterIds={currentBuilder.recipe.monsterIds}
+            manaCounts={currentBuilder.manaCounts}
+          />
         </div>
       </div>
     </div>

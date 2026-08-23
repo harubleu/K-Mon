@@ -1,11 +1,11 @@
 // src/components/PlayerZone.tsx
 
 import React, { useState } from 'react';
-import type { PlayerState, PlayerSide, ZoneType } from '../types';
+import type { PlayerState, PlayerSide, ZoneType, ManaCard } from '../types'; // 【修正】ManaCardを追加
 import { MonsterZone } from './MonsterZone';
 import { Card } from './Card';
 import { CemeteryAndExileModal } from './CemeteryAndExileModal';
-import { DeckModal } from './DeckModal'; // DeckModalをインポート
+import { DeckModal } from './DeckModal';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
@@ -28,13 +28,13 @@ interface PlayerZoneProps {
     cardIds: string[],
     sourceZone: ZoneType,
     toZone: ZoneType,
-  ) => void; // 修正
+  ) => void;
   onEquipSpecific: (
     side: PlayerSide,
     cardId: string,
     sourceZone: ZoneType,
     monsterIndex: number,
-  ) => void; // 修正
+  ) => void;
   onShuffleDeck: (side: PlayerSide) => void;
   onDraw: (side: PlayerSide) => void;
 }
@@ -54,13 +54,41 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
-  const [isDeckModalOpen, setIsDeckModalOpen] = useState(false); // 山札モーダルの状態
+  const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
+
+  // 【修正】ここに正しく移動。propsのplayerState/side/onTrashManaを参照できる
+  const [selectedManaIds, setSelectedManaIds] = useState<string[]>([]);
+
+  const handleToggleSelectMana = (manaId: string) => {
+    setSelectedManaIds((prev) =>
+      prev.includes(manaId)
+        ? prev.filter((id) => id !== manaId)
+        : [...prev, manaId],
+    );
+  };
+
+  // 全モンスターを横断して選択中マナを一括で墓地/除外へ送る
+  const handleBulkMoveSelectedMana = (destination: 'cemetery' | 'exile') => {
+    playerState.monsters.forEach((monster, index) => {
+      const monsterManaIds = monster.equippedMana
+        .filter((m): m is ManaCard => m !== null)
+        .map((m) => m.id);
+      const targetIds = selectedManaIds.filter((id) =>
+        monsterManaIds.includes(id),
+      );
+      if (targetIds.length > 0) {
+        onTrashMana(side, index, targetIds, destination);
+      }
+    });
+    setSelectedManaIds([]);
+  };
 
   const topCemeteryCard = playerState.cemetery[playerState.cemetery.length - 1];
   const isAnyModalOpen =
     isCemeteryModalOpen ||
     isDeckModalOpen ||
     playerState.pendingDrawCards.length > 0;
+
   return (
     <div
       style={{
@@ -73,7 +101,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         margin: '8px 0',
       }}
     >
-      {/* 左側: 山札 (裏向きカードアイコン ＋ 枚数表示) */}
+      {/* 左側: 山札 */}
       <div
         style={{
           width: '120px',
@@ -89,7 +117,6 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         <div style={{ fontSize: '1.2rem', marginTop: '8px' }}>
           🎴 {playerState.deck.length}枚
         </div>
-        {/* 山札操作ボタンエリアをフレックスボックスで縦並びに変更 */}
         <div
           style={{
             display: 'flex',
@@ -137,8 +164,9 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         <MonsterZone
           monsters={playerState.monsters}
           side={side}
-          isDropDisabled={isAnyModalOpen} // モーダルが開いている場合はドロップを無効化
-          onEquipMana={onEquipMana}
+          isDropDisabled={isAnyModalOpen}
+          selectedManaIds={selectedManaIds}
+          onToggleSelectMana={handleToggleSelectMana}
           onTrashMana={onTrashMana}
           onFlipMonster={onFlipMonster}
         />
@@ -176,6 +204,18 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           style={{ fontSize: '0.75rem', padding: '4px 8px', cursor: 'pointer' }}
         >
           墓地・除外確認
+        </button>
+        <button
+          onClick={() => handleBulkMoveSelectedMana('cemetery')}
+          disabled={selectedManaIds.length === 0}
+        >
+          選択中マナを墓地へ ({selectedManaIds.length})
+        </button>
+        <button
+          onClick={() => handleBulkMoveSelectedMana('exile')}
+          disabled={selectedManaIds.length === 0}
+        >
+          選択中マナを除外へ
         </button>
       </div>
 
@@ -234,7 +274,6 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           >
             <h3 style={{ marginTop: 0 }}>1枚ドロー確認 ({label})</h3>
 
-            {/* 追加: モンスターと装備中マナの状況表示 */}
             <MonsterSummary
               monsters={playerState.monsters}
               label={label}
@@ -281,7 +320,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   monsterIndex={index}
                   slotIndex={0}
                   slotName=''
-                  idPrefix='modal_draw' // モーダル専用IDプレフィックス
+                  idPrefix='modal_draw'
                   style={{ aspectRatio: 'auto', width: '100%' }}
                 >
                   <button
@@ -344,8 +383,10 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   marginTop: '8px',
                   padding: '8px',
                   cursor: 'pointer',
-                  backgroundColor: '#eee',
-                  border: 'none',
+                  backgroundColor: '#6b7280',
+                  color: '#fff',
+                  border: '1px solid #4b5563',
+                  fontWeight: 'bold',
                 }}
               >
                 キャンセル（山札の上に戻す）
