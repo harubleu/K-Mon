@@ -125,10 +125,21 @@ export type EquipSpecificManaAction = {
 export type MoveCardBetweenZonesAction = {
   type: 'MOVE_CARD_BETWEEN_ZONES';
   payload: {
-    side: PlayerSide;
+    sourceSide: PlayerSide;
+    targetSide: PlayerSide;
     cardIds: string[];
     sourceZone: ZoneType;
     targetZone: ZoneType;
+  };
+};
+
+// 山札内のカード並び替え
+export type ReorderDeckAction = {
+  type: 'REORDER_DECK';
+  payload: {
+    side: PlayerSide;
+    // 先頭に来る順序で指定。デッキに残る未指定分は元の相対順序のまま後ろに続く
+    orderedCardIds: string[];
   };
 };
 
@@ -162,6 +173,7 @@ export type GameAction =
   | FlipMonsterAction
   | EquipSpecificManaAction
   | MoveCardBetweenZonesAction
+  | ReorderDeckAction
   | ShuffleDeckAction
   | SetInitialStateAction
   | { type: 'NEXT_PHASE' }

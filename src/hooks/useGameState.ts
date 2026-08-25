@@ -349,31 +349,49 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
     case 'MOVE_CARD_BETWEEN_ZONES': {
       const {
-        side,
+        sourceSide,
+        targetSide,
         cardIds,
         sourceZone = 'deck',
         targetZone = 'cemetery',
       } = action.payload;
-      const targetPlayer = state[side];
 
-      // 安全に配列を取得 (pending対応)
+      const sourcePlayer = state[sourceSide];
       const sourceKey =
         sourceZone === 'pending' ? 'pendingDrawCards' : sourceZone;
-      const targetKey =
-        targetZone === 'pending' ? 'pendingDrawCards' : targetZone;
-
-      const sourceList = targetPlayer[sourceKey] || [];
-      const targetList = targetPlayer[targetKey] || [];
+      const sourceList = sourcePlayer[sourceKey] || [];
 
       const movingCards = sourceList.filter((card) =>
         cardIds.includes(card.id),
       );
-
       const newSourceList = sourceList.filter(
         (card) => !cardIds.includes(card.id),
       );
 
-      // 移動先にカードを追加 (山札に戻す場合は先頭に追加)
+      const targetKey =
+        targetZone === 'pending' ? 'pendingDrawCards' : targetZone;
+
+      if (sourceSide === targetSide) {
+        // 【修正前と同じ】同一プレイヤー内の移動
+        const targetList = sourcePlayer[targetKey] || [];
+        const newTargetList =
+          targetZone === 'deck'
+            ? [...movingCards, ...targetList]
+            : [...targetList, ...movingCards];
+
+        return {
+          ...state,
+          [sourceSide]: {
+            ...sourcePlayer,
+            [sourceKey]: newSourceList,
+            [targetKey]: newTargetList,
+          },
+        };
+      }
+
+      // 【新規】プレイヤーをまたぐ移動。sourceSide側とtargetSide側、両方のstateを更新する
+      const targetPlayer = state[targetSide];
+      const targetList = targetPlayer[targetKey] || [];
       const newTargetList =
         targetZone === 'deck'
           ? [...movingCards, ...targetList]
@@ -381,10 +399,35 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       return {
         ...state,
-        [side]: {
-          ...targetPlayer,
+        [sourceSide]: {
+          ...sourcePlayer,
           [sourceKey]: newSourceList,
+        },
+        [targetSide]: {
+          ...targetPlayer,
           [targetKey]: newTargetList,
+        },
+      };
+    }
+
+    // 【追加】新規ケース
+    case 'REORDER_DECK': {
+      const { side, orderedCardIds } = action.payload;
+      const player = state[side];
+
+      // 指定された順序のカードを先頭に、残りは元の相対順序のまま後ろに続ける
+      const orderedCards = orderedCardIds
+        .map((id) => player.deck.find((c) => c.id === id))
+        .filter((c): c is ManaCard => c !== undefined);
+      const remainingCards = player.deck.filter(
+        (c) => !orderedCardIds.includes(c.id),
+      );
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          deck: [...orderedCards, ...remainingCards],
         },
       };
     }

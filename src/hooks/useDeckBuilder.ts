@@ -114,13 +114,16 @@ export const useDeckBuilder = () => {
     });
 
     const deck: ManaCard[] = [];
-    let manaIdCounter = 1;
+    // 【削除】let manaIdCounter = 1; ← 連番方式だとplayer/opponent間でIDが衝突するため廃止
     Object.entries(recipe.manaCounts).forEach(([kanji, count]) => {
       const master = MANA_MASTER_LIST.find((m) => m.kanji === kanji);
       if (master) {
         for (let i = 0; i < count; i++) {
           deck.push({
-            id: `mana_${master.kanji}_${manaIdCounter++}`,
+            // 【修正】player/opponentどちらのuseDeckBuilderインスタンスから生成しても
+            // 絶対に衝突しないよう、ブラウザ標準のcrypto.randomUUID()で一意なIDを生成する。
+            // クロスプレイヤー移動機能により、両陣営のカードが同一配列に混在し得るようになったため必須の変更。
+            id: `mana_${master.kanji}_${crypto.randomUUID()}`,
             hexColor: master.hexColor,
             kanji: master.kanji,
             reading: master.reading,

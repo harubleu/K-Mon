@@ -23,27 +23,29 @@ interface PlayerZoneProps {
   ) => void;
   onFlipMonster: (side: PlayerSide, monsterIndex: number) => void;
   onRecover: (side: PlayerSide, manaIds: string[]) => void;
-  onMoveCards: (
-    side: PlayerSide,
-    cardIds: string[],
-    sourceZone: ZoneType,
-    toZone: ZoneType,
-  ) => void;
+  // 【修正】object引数の新シグネチャに変更
+  onMoveCards: (params: {
+    sourceSide: PlayerSide;
+    targetSide: PlayerSide;
+    cardIds: string[];
+    sourceZone: ZoneType;
+    targetZone: ZoneType;
+  }) => void;
   onEquipSpecific: (
     side: PlayerSide,
     cardId: string,
     sourceZone: ZoneType,
     monsterIndex: number,
   ) => void;
-  onShuffleDeck: (side: PlayerSide) => void;
+  onShuffleDeck: (side: PlayerSide) => void; // 既存のまま。DeckModalにもそのまま渡す
   onDraw: (side: PlayerSide) => void;
+  onReorderDeck: (side: PlayerSide, orderedCardIds: string[]) => void;
 }
 
 export const PlayerZone: React.FC<PlayerZoneProps> = ({
   playerState,
   side,
   label,
-  //onEquipMana,
   onTrashMana,
   onFlipMonster,
   onRecover,
@@ -51,6 +53,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   onEquipSpecific,
   onShuffleDeck,
   onDraw,
+  onReorderDeck,
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
@@ -104,7 +107,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
       {/* 左側: 山札 */}
       <div
         style={{
-          width: '120px',
+          width: '150px',
           textAlign: 'center',
           padding: '16px 8px',
           border: '1px dashed #888',
@@ -175,7 +178,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
       {/* 右側: 墓地 / 除外 */}
       <div
         style={{
-          width: '120px',
+          width: '180px',
           textAlign: 'center',
           padding: '12px 8px',
           border: '1px dashed #888',
@@ -215,7 +218,7 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           onClick={() => handleBulkMoveSelectedMana('exile')}
           disabled={selectedManaIds.length === 0}
         >
-          選択中マナを除外へ
+          選択中マナを除外へ ({selectedManaIds.length})
         </button>
       </div>
 
@@ -243,6 +246,8 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         onClose={() => setIsDeckModalOpen(false)}
         onMoveCards={onMoveCards}
         onEquipSpecific={onEquipSpecific}
+        onShuffleDeck={onShuffleDeck}
+        onReorderDeck={onReorderDeck}
       />
 
       {/* ドロー確認モーダル */}
@@ -344,12 +349,13 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
 
               <button
                 onClick={() => {
-                  onMoveCards(
-                    side,
-                    [playerState.pendingDrawCards[0].id],
-                    'pending',
-                    'cemetery',
-                  );
+                  onMoveCards({
+                    sourceSide: side,
+                    targetSide: side,
+                    cardIds: [playerState.pendingDrawCards[0].id],
+                    sourceZone: 'pending',
+                    targetZone: 'cemetery',
+                  });
                 }}
                 style={{ padding: '8px', cursor: 'pointer' }}
               >
@@ -358,12 +364,13 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
 
               <button
                 onClick={() => {
-                  onMoveCards(
-                    side,
-                    [playerState.pendingDrawCards[0].id],
-                    'pending',
-                    'exile',
-                  );
+                  onMoveCards({
+                    sourceSide: side,
+                    targetSide: side,
+                    cardIds: [playerState.pendingDrawCards[0].id],
+                    sourceZone: 'pending',
+                    targetZone: 'exile',
+                  });
                 }}
                 style={{ padding: '8px', cursor: 'pointer' }}
               >
@@ -372,12 +379,13 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
 
               <button
                 onClick={() => {
-                  onMoveCards(
-                    side,
-                    [playerState.pendingDrawCards[0].id],
-                    'pending',
-                    'deck',
-                  );
+                  onMoveCards({
+                    sourceSide: side,
+                    targetSide: side,
+                    cardIds: [playerState.pendingDrawCards[0].id],
+                    sourceZone: 'pending',
+                    targetZone: 'deck',
+                  });
                 }}
                 style={{
                   marginTop: '8px',

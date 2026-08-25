@@ -5,6 +5,7 @@ import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
+import { MoveDestinationSelector } from './MoveDestinationSelector';
 
 interface DeckModalProps {
   isOpen: boolean;
@@ -13,20 +14,21 @@ interface DeckModalProps {
   monsters: MonsterCard[];
   label: string;
   onClose: () => void;
-  // 山札から他の領域(墓地・除外)へ移動するハンドラー
-  onMoveCards: (
-    side: PlayerSide,
-    cardIds: string[],
-    sourceZone: ZoneType,
-    toZone: ZoneType,
-  ) => void;
-  // 山札から指定モンスターへ直接装備するハンドラー
+  onMoveCards: (params: {
+    sourceSide: PlayerSide;
+    targetSide: PlayerSide;
+    cardIds: string[];
+    sourceZone: ZoneType;
+    targetZone: ZoneType;
+  }) => void;
   onEquipSpecific: (
     side: PlayerSide,
     cardId: string,
     sourceZone: ZoneType,
     monsterIndex: number,
   ) => void;
+  onShuffleDeck: (side: PlayerSide) => void; // 【追加】
+  onReorderDeck: (side: PlayerSide, orderedCardIds: string[]) => void; // 【追加】
 }
 
 export const DeckModal: React.FC<DeckModalProps> = ({
@@ -38,12 +40,17 @@ export const DeckModal: React.FC<DeckModalProps> = ({
   onClose,
   onMoveCards,
   onEquipSpecific,
+  onShuffleDeck,
+  onReorderDeck,
 }) => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
+  // 【追加】並び替えモード用の状態
+  const [isReorderMode, setIsReorderMode] = useState(false);
+  const [reorderSequence, setReorderSequence] = useState<string[]>([]);
+
   if (!isOpen) return null;
 
-  // カードの選択/解除をトグル
   const handleToggleCard = (cardId: string) => {
     setSelectedIds((prev) =>
       prev.includes(cardId)
@@ -52,15 +59,6 @@ export const DeckModal: React.FC<DeckModalProps> = ({
     );
   };
 
-  // 選択したカードを墓地・または除外へ移動
-  const handleMove = (toZone: ZoneType) => {
-    if (selectedIds.length > 0) {
-      onMoveCards(side, selectedIds, 'deck', toZone);
-      setSelectedIds([]);
-    }
-  };
-
-  // 選択した1枚のカードをモンスターに装備
   const handleEquip = (monsterIndex: number) => {
     if (selectedIds.length === 1) {
       onEquipSpecific(side, selectedIds[0], 'deck', monsterIndex);
@@ -68,9 +66,43 @@ export const DeckModal: React.FC<DeckModalProps> = ({
     }
   };
 
+  // 【追加】並び替えモード関連ハンドラー
+  const handleToggleReorder = (cardId: string) => {
+    setReorderSequence((prev) =>
+      prev.includes(cardId)
+        ? prev.filter((id) => id !== cardId)
+        : [...prev, cardId],
+    );
+  };
+
+  const handleStartReorder = () => {
+    setSelectedIds([]); // 通常モードの選択はクリアしておく
+    setIsReorderMode(true);
+  };
+
+  const handleConfirmReorder = () => {
+    if (reorderSequence.length > 0) {
+      onReorderDeck(side, reorderSequence);
+    }
+    setReorderSequence([]);
+    setIsReorderMode(false);
+  };
+
+  const handleCancelReorder = () => {
+    setReorderSequence([]);
+    setIsReorderMode(false);
+  };
+
   const handleClose = () => {
-    setSelectedIds([]); // 閉じる際にも選択状態をリセット
+    setSelectedIds([]);
+    setReorderSequence([]);
+    setIsReorderMode(false);
     onClose();
+  };
+
+  const handleShuffleAndClose = () => {
+    onShuffleDeck(side);
+    handleClose();
   };
 
   return (
@@ -110,9 +142,20 @@ export const DeckModal: React.FC<DeckModalProps> = ({
           <h3 style={{ margin: 0 }}>
             {label}の山札確認・操作 ({deck.length}枚)
           </h3>
-          <button onClick={handleClose} style={{ cursor: 'pointer' }}>
-            閉じる
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {/* 【追加】シャッフルして閉じる（並び替え中は誤操作防止のため非表示） */}
+            {!isReorderMode && (
+              <button
+                onClick={handleShuffleAndClose}
+                style={{ cursor: 'pointer', padding: '4px 10px' }}
+              >
+                🔀 シャッフルして閉じる
+              </button>
+            )}
+            <button onClick={handleClose} style={{ cursor: 'pointer' }}>
+              閉じる
+            </button>
+          </div>
         </div>
 
         <MonsterSummary
@@ -138,6 +181,51 @@ export const DeckModal: React.FC<DeckModalProps> = ({
             <p style={{ color: '#888' }}>山札にカードがありません。</p>
           ) : (
             deck.map((card) => {
+              // 【追加】並び替えモード時のカード描画
+              if (isReorderMode) {
+                const orderIndex = reorderSequence.indexOf(card.id);
+                const isPicked = orderIndex !== -1;
+                return (
+                  <div
+                    key={card.id}
+                    onClick={() => handleToggleReorder(card.id)}
+                    style={{
+                      position: 'relative',
+                      cursor: 'pointer',
+                      border: isPicked ? '3px solid #f59e0b' : '1px solid #ccc',
+                      borderRadius: '6px',
+                      padding: '4px',
+                      backgroundColor: isPicked ? '#fff7ed' : '#fff',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <Card card={card} />
+                    {isPicked && (
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: '-8px',
+                          right: '-8px',
+                          backgroundColor: '#f59e0b',
+                          color: '#fff',
+                          borderRadius: '50%',
+                          width: '20px',
+                          height: '20px',
+                          fontSize: '0.7rem',
+                          fontWeight: 'bold',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        {orderIndex + 1}
+                      </span>
+                    )}
+                  </div>
+                );
+              }
+
+              // 通常モードの描画（従来通り）
               const isSelected = selectedIds.includes(card.id);
               return (
                 <div
@@ -162,62 +250,137 @@ export const DeckModal: React.FC<DeckModalProps> = ({
         </div>
 
         {/* 操作アクションエリア */}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '8px',
-            backgroundColor: '#f8f9fa',
-            borderRadius: '4px',
-          }}
-        >
-          <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
-            選択中のカード: {selectedIds.length}枚
-          </div>
-
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              onClick={() => handleMove('cemetery')}
-              disabled={selectedIds.length === 0}
-              style={{
-                padding: '6px 12px',
-                cursor: selectedIds.length > 0 ? 'pointer' : 'not-allowed',
-              }}
-            >
-              墓地へ送る
-            </button>
-            <button
-              onClick={() => handleMove('exile')}
-              disabled={selectedIds.length === 0}
-              style={{
-                padding: '6px 12px',
-                cursor: selectedIds.length > 0 ? 'pointer' : 'not-allowed',
-              }}
-            >
-              除外する
-            </button>
-
-            <span
-              style={{ borderLeft: '1px solid #ccc', margin: '0 4px' }}
-            ></span>
-
-            {/* 装備アクション (特定1枚のみ対応のため、選択数が1の時のみ有効) */}
-            {[0, 1, 2].map((index) => (
+        {isReorderMode ? (
+          // 【追加】並び替えモード用の操作パネル
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              padding: '8px',
+              backgroundColor: '#fff7ed',
+              borderRadius: '4px',
+              border: '1px solid #f59e0b',
+            }}
+          >
+            <div style={{ fontSize: '0.8rem', color: '#92400e' }}>
+              先頭に持ってきたい順にカードをクリックしてください（
+              {reorderSequence.length}枚選択中）。
+              クリックしなかったカードは、元の順序のままその後ろに続きます。
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
               <button
-                key={index}
-                onClick={() => handleEquip(index)}
-                disabled={selectedIds.length !== 1}
+                onClick={handleConfirmReorder}
+                disabled={reorderSequence.length === 0}
                 style={{
-                  padding: '6px 12px',
-                  cursor: selectedIds.length === 1 ? 'pointer' : 'not-allowed',
+                  padding: '6px 14px',
+                  backgroundColor:
+                    reorderSequence.length === 0 ? '#ccc' : '#f59e0b',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor:
+                    reorderSequence.length === 0 ? 'not-allowed' : 'pointer',
+                  fontWeight: 'bold',
                 }}
               >
-                モンスター{index + 1}に装備
+                この順番で確定
               </button>
-            ))}
+              <button
+                onClick={() => setReorderSequence([])}
+                style={{ padding: '6px 14px', cursor: 'pointer' }}
+              >
+                クリア
+              </button>
+              <button
+                onClick={handleCancelReorder}
+                style={{ padding: '6px 14px', cursor: 'pointer' }}
+              >
+                キャンセル
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              padding: '8px',
+              backgroundColor: '#f8f9fa',
+              borderRadius: '4px',
+            }}
+          >
+            <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+              選択中のカード: {selectedIds.length}枚
+            </div>
+
+            {/* 【修正】従来の「墓地へ送る」「除外する」ボタンを汎用セレクターに置き換え */}
+            <MoveDestinationSelector
+              currentSide={side}
+              currentZone='deck'
+              selectedCount={selectedIds.length}
+              onExecute={(targetSide, targetZone) => {
+                onMoveCards({
+                  sourceSide: side,
+                  targetSide,
+                  cardIds: selectedIds,
+                  sourceZone: 'deck',
+                  targetZone,
+                });
+                setSelectedIds([]);
+              }}
+            />
+
+            <div
+              style={{
+                display: 'flex',
+                gap: '8px',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+              }}
+            >
+              <span
+                style={{
+                  borderLeft: '1px solid #ccc',
+                  margin: '0 4px',
+                  height: '24px',
+                }}
+              ></span>
+
+              {[0, 1, 2].map((index) => (
+                <button
+                  key={index}
+                  onClick={() => handleEquip(index)}
+                  disabled={selectedIds.length !== 1}
+                  style={{
+                    padding: '6px 12px',
+                    cursor:
+                      selectedIds.length === 1 ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  モンスター{index + 1}に装備
+                </button>
+              ))}
+
+              {/* 【追加】並び替えモードへの入り口 */}
+              <button
+                onClick={handleStartReorder}
+                style={{
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                  marginLeft: 'auto',
+                  border: '1px solid #f59e0b',
+                  color: '#f59e0b',
+                  backgroundColor: '#fff',
+                  borderRadius: '4px',
+                }}
+              >
+                並び替えモード
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

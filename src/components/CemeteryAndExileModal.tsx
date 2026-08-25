@@ -6,6 +6,7 @@ import { Card } from './Card';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
+import { MoveDestinationSelector } from './MoveDestinationSelector';
 
 interface CemeteryAndExileModalProps {
   isOpen: boolean;
@@ -15,13 +16,18 @@ interface CemeteryAndExileModalProps {
   side: PlayerSide;
   label: string;
   onClose: () => void;
+  // 【注記】このモーダルからの「山札に戻す(回復)」呼び出しは、汎用セレクターへの
+  // 統合により行わなくなりました。onRecoverは現在このファイル内では未使用ですが、
+  // 呼び出し元(PlayerZone.tsx/App.tsx)のprops構造を壊さないためprops自体は残しています。
+  // 完全に不要であれば、propsごと削除しても問題ありません。
   onRecover: (side: PlayerSide, manaIds: string[]) => void;
-  onMoveCards: (
-    side: PlayerSide,
-    cardIds: string[],
-    sourceZone: ZoneType,
-    toZone: ZoneType,
-  ) => void;
+  onMoveCards: (params: {
+    sourceSide: PlayerSide;
+    targetSide: PlayerSide;
+    cardIds: string[];
+    sourceZone: ZoneType;
+    targetZone: ZoneType;
+  }) => void;
   onEquipSpecific: (
     side: PlayerSide,
     cardId: string,
@@ -38,14 +44,12 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
   side,
   label,
   onClose,
-  onRecover,
   onMoveCards,
   onEquipSpecific,
 }) => {
   const [activeTab, setActiveTab] = useState<'cemetery' | 'exile'>('cemetery');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
-  // タブ切り替え時や閉じた時に選択状態をリセット
   useEffect(() => {
     setSelectedIds([]);
   }, [activeTab, isOpen]);
@@ -60,21 +64,6 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
         ? prev.filter((id) => id !== cardId)
         : [...prev, cardId],
     );
-  };
-
-  const handleAction = (
-    actionType: 'recover' | 'moveToExile' | 'moveToCemetery',
-  ) => {
-    if (selectedIds.length === 0) return;
-
-    if (actionType === 'recover') {
-      onRecover(side, selectedIds);
-    } else if (actionType === 'moveToExile') {
-      onMoveCards(side, selectedIds, 'cemetery', 'exile');
-    } else if (actionType === 'moveToCemetery') {
-      onMoveCards(side, selectedIds, 'exile', 'cemetery');
-    }
-    setSelectedIds([]);
   };
 
   const handleEquip = (monsterIndex: number) => {
@@ -196,11 +185,7 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
                     backgroundColor: isSelected ? '#e6f0ff' : '#fff',
                   }}
                 >
-                  <DraggableMana
-                    mana={card}
-                    side={side}
-                    sourceZone={activeTab} // 現在のタブ ('cemetery' | 'exile') を sourceZone として渡す
-                  >
+                  <DraggableMana mana={card} side={side} sourceZone={activeTab}>
                     <Card card={card} />
                   </DraggableMana>
                 </div>
@@ -225,37 +210,37 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
             選択中のカード: {selectedIds.length}枚
           </div>
 
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {activeTab === 'cemetery' && (
-              <>
-                <button
-                  onClick={() => handleAction('recover')}
-                  disabled={selectedIds.length === 0}
-                  style={{ padding: '6px 12px' }}
-                >
-                  山札に戻す(回復)
-                </button>
-                <button
-                  onClick={() => handleAction('moveToExile')}
-                  disabled={selectedIds.length === 0}
-                  style={{ padding: '6px 12px' }}
-                >
-                  除外する
-                </button>
-              </>
-            )}
-            {activeTab === 'exile' && (
-              <button
-                onClick={() => handleAction('moveToCemetery')}
-                disabled={selectedIds.length === 0}
-                style={{ padding: '6px 12px' }}
-              >
-                墓地に戻す
-              </button>
-            )}
+          {/* 【修正】タブごとに出し分けていた3つのボタンを汎用セレクターに置き換え */}
+          <MoveDestinationSelector
+            currentSide={side}
+            currentZone={activeTab}
+            selectedCount={selectedIds.length}
+            onExecute={(targetSide, targetZone) => {
+              onMoveCards({
+                sourceSide: side,
+                targetSide,
+                cardIds: selectedIds,
+                sourceZone: activeTab,
+                targetZone,
+              });
+              setSelectedIds([]);
+            }}
+          />
 
+          <div
+            style={{
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+            }}
+          >
             <span
-              style={{ borderLeft: '1px solid #ccc', margin: '0 4px' }}
+              style={{
+                borderLeft: '1px solid #ccc',
+                margin: '0 4px',
+                height: '24px',
+              }}
             ></span>
 
             {[0, 1, 2].map((index) => (
@@ -265,7 +250,7 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
                 monsterIndex={index}
                 slotIndex={0}
                 slotName=''
-                idPrefix='modal_cemetery' // モーダル専用IDプレフィックス
+                idPrefix='modal_cemetery'
                 style={{ aspectRatio: 'auto' }}
               >
                 <button

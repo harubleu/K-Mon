@@ -109,7 +109,8 @@ export const App: React.FC = () => {
     dispatch({
       type: 'MOVE_CARD_BETWEEN_ZONES',
       payload: {
-        side: targetSide,
+        sourceSide: targetSide,
+        targetSide: targetSide,
         cardIds: cardsToMove,
         sourceZone: 'deck',
         targetZone: destination,
@@ -159,15 +160,23 @@ export const App: React.FC = () => {
     });
   };
 
-  const handleMoveCards = (
-    side: PlayerSide,
-    cardIds: string[],
-    sourceZone: ZoneType,
-    targetZone: ZoneType,
-  ) => {
+  const handleMoveCards = (params: {
+    sourceSide: PlayerSide;
+    targetSide: PlayerSide;
+    cardIds: string[];
+    sourceZone: ZoneType;
+    targetZone: ZoneType;
+  }) => {
     dispatch({
       type: 'MOVE_CARD_BETWEEN_ZONES',
-      payload: { side, cardIds, sourceZone, targetZone },
+      payload: params,
+    });
+  };
+
+  const handleReorderDeck = (side: PlayerSide, orderedCardIds: string[]) => {
+    dispatch({
+      type: 'REORDER_DECK',
+      payload: { side, orderedCardIds },
     });
   };
 
@@ -417,6 +426,7 @@ export const App: React.FC = () => {
           onEquipSpecific={handleEquipSpecific}
           onShuffleDeck={handleShuffleDeck}
           onDraw={handleAutoDraw}
+          onReorderDeck={handleReorderDeck}
         />
 
         {/* [中段] アクション・情報表示エリア */}
@@ -442,6 +452,7 @@ export const App: React.FC = () => {
           onEquipSpecific={handleEquipSpecific}
           onShuffleDeck={handleShuffleDeck}
           onDraw={handleAutoDraw}
+          onReorderDeck={handleReorderDeck}
         />
       </div>
 
