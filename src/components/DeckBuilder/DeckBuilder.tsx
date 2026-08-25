@@ -176,6 +176,7 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({
           <SelectionSidebar
             monsterIds={currentBuilder.recipe.monsterIds}
             manaCounts={currentBuilder.manaCounts}
+            onUpdateCount={currentBuilder.updateManaCount}
           />
         </div>
       </div>

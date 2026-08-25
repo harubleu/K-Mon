@@ -32,13 +32,13 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
     <div
       style={{
         display: 'flex',
-        gap: '100px',
+        gap: '140px',
         justifyContent: 'center',
         flexGrow: 1,
         padding: '20px 0',
         boxSizing: 'border-box',
-        paddingLeft: '48px',
-        paddingRight: '48px',
+        paddingLeft: '90px',
+        paddingRight: '90px',
       }}
     >
       {monsters.map((monster, index) => (
@@ -56,7 +56,7 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
             height: '100%',
           }}
         >
-          <div style={{ marginBottom: '16px', marginTop: '8px' }}>
+          <div style={{ marginBottom: '80px', marginTop: '50px' }}>
             <MonsterWithMana
               monster={monster}
               selectedManaIds={selectedManaIds}

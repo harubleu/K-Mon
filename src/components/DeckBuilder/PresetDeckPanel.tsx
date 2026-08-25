@@ -35,6 +35,7 @@ export const PresetDeckPanel: React.FC<PresetDeckPanelProps> = ({
         borderRadius: '8px',
         border: '1px solid #ccc',
         width: '100%',
+        boxSizing: 'border-box',
       }}
     >
       <div

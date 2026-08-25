@@ -9,27 +9,32 @@ interface MonsterSelectorProps {
   manaCounts: Record<string, number>;
 }
 
+type CorrelationFilter = 'all' | 'strong' | 'weakOrStrong';
+
 export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
   selectedMonsterIds,
   onToggleMonster,
   manaCounts,
 }) => {
-  // 【修正】初期タブを「すべて」ではなく最初の弾にする
   const [activeFolder, setActiveFolder] = useState<string>('第1弾_キホンのキ');
 
-  // 【追加】プレビュー用の反転状態（実ゲーム状態には影響しない、選択画面だけのローカル状態）
+  // プレビュー用の反転状態（実ゲーム状態には影響しない、選択画面だけのローカル状態）
   const [previewFlippedIds, setPreviewFlippedIds] = useState<Set<string>>(
     new Set(),
   );
   const [allFlipped, setAllFlipped] = useState(false);
 
+  // 相関フィルタの状態
+  const [correlationFilter, setCorrelationFilter] =
+    useState<CorrelationFilter>('all');
+
   const toggleGlobalFlip = () => {
     setAllFlipped((prev) => !prev);
-    setPreviewFlippedIds(new Set()); // 個別上書きをリセットし、全体設定を優先させる
+    setPreviewFlippedIds(new Set());
   };
 
   const toggleIndividualFlip = (e: React.MouseEvent, monsterId: string) => {
-    e.stopPropagation(); // 親divのonToggleMonsterと競合しないようにする
+    e.stopPropagation();
     setPreviewFlippedIds((prev) => {
       const next = new Set(prev);
       next.has(monsterId) ? next.delete(monsterId) : next.add(monsterId);
@@ -47,14 +52,40 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
     return ['すべて', ...folderNames];
   }, []);
 
-  const filteredMonsters = useMemo(() => {
+  // 【重要】hasSelectedMana と getCorrelationLevel は、
+  // これらを利用する useMemo (folderFilteredMonsters等)より
+  // 必ず前に置くこと。宣言順序を守らないと
+  // "Cannot access ... before initialization" エラーになる。
+  const hasSelectedMana = Object.values(manaCounts).some((count) => count > 0);
+
+  const getCorrelationLevel = (
+    monster: (typeof MONSTER_MASTER_LIST)[number],
+  ): 'none' | 'weak' | 'strong' => {
+    if (!hasSelectedMana) return 'none';
+    const requiredKanji = monster.slots;
+    const isAllCovered = requiredKanji.every((k) => manaCounts[k] > 0);
+    const isPartiallyCovered = requiredKanji.some((k) => manaCounts[k] > 0);
+    if (isAllCovered) return 'strong';
+    if (isPartiallyCovered) return 'weak';
+    return 'none';
+  };
+
+  const folderFilteredMonsters = useMemo(() => {
     if (activeFolder === 'すべて') return MONSTER_MASTER_LIST;
     return MONSTER_MASTER_LIST.filter(
       (m) => (m.folder || '未分類') === activeFolder,
     );
   }, [activeFolder]);
 
-  const hasSelectedMana = Object.values(manaCounts).some((count) => count > 0);
+  const filteredMonsters = useMemo(() => {
+    if (correlationFilter === 'all') return folderFilteredMonsters;
+    return folderFilteredMonsters.filter((m) => {
+      const level = getCorrelationLevel(m);
+      if (correlationFilter === 'strong') return level === 'strong';
+      return level === 'strong' || level === 'weak';
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderFilteredMonsters, correlationFilter, manaCounts, hasSelectedMana]);
 
   return (
     <section>
@@ -64,22 +95,46 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
           justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: '12px',
+          flexWrap: 'wrap',
+          gap: '8px',
         }}
       >
         <h3 style={{ margin: 0 }}>1. モンスター選択（3体）</h3>
-        {/* 【追加】一括反転ボタン */}
-        <button
-          onClick={toggleGlobalFlip}
-          style={{
-            padding: '6px 12px',
-            fontSize: '0.8rem',
-            cursor: 'pointer',
-            borderRadius: '4px',
-            border: '1px solid #ccc',
-          }}
-        >
-          {allFlipped ? 'すべて表面に戻す' : 'すべて裏面で確認'}
-        </button>
+
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <select
+            value={correlationFilter}
+            onChange={(e) =>
+              setCorrelationFilter(e.target.value as CorrelationFilter)
+            }
+            disabled={!hasSelectedMana}
+            title={!hasSelectedMana ? 'マナを選択すると使えます' : ''}
+            style={{
+              padding: '6px 8px',
+              fontSize: '0.8rem',
+              borderRadius: '4px',
+              border: '1px solid #ccc',
+              cursor: hasSelectedMana ? 'pointer' : 'not-allowed',
+            }}
+          >
+            <option value='all'>すべて表示</option>
+            <option value='strong'>強い相関のみ</option>
+            <option value='weakOrStrong'>相関あり（強・弱）</option>
+          </select>
+
+          <button
+            onClick={toggleGlobalFlip}
+            style={{
+              padding: '6px 12px',
+              fontSize: '0.8rem',
+              cursor: 'pointer',
+              borderRadius: '4px',
+              border: '1px solid #ccc',
+            }}
+          >
+            {allFlipped ? 'すべて表面に戻す' : 'すべて裏面で確認'}
+          </button>
+        </div>
       </div>
 
       {/* フォルダタブ */}
@@ -122,7 +177,7 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
         }}
       >
         {filteredMonsters.map((monster) => {
-          const selectionOrder = selectedMonsterIds.indexOf(monster.id); // -1 = 未選択
+          const selectionOrder = selectedMonsterIds.indexOf(monster.id);
           const isSelected = selectionOrder !== -1;
           const isFlippedPreview = isPreviewFlipped(monster.id);
 
@@ -138,20 +193,15 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
               boxShadow: '0 0 0 2px #007bff',
               border: '2px solid #007bff',
             };
-          } else if (hasSelectedMana) {
-            const requiredKanji = monster.slots;
-            const isAllCovered = requiredKanji.every((k) => manaCounts[k] > 0);
-            const isPartiallyCovered = requiredKanji.some(
-              (k) => manaCounts[k] > 0,
-            );
-
-            if (isAllCovered) {
+          } else {
+            const level = getCorrelationLevel(monster);
+            if (level === 'strong') {
               bgStyle = {
                 backgroundColor: '#fff9c4',
                 boxShadow: '0 4px 12px rgba(255, 215, 0, 0.6)',
                 border: '2px solid transparent',
               };
-            } else if (isPartiallyCovered) {
+            } else if (level === 'weak') {
               bgStyle = {
                 backgroundColor: '#ffffff',
                 boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
@@ -190,7 +240,6 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
                 }}
               />
 
-              {/* 【追加】反転専用アイコン（左上、クリックイベントを親から分離） */}
               <button
                 onClick={(e) => toggleIndividualFlip(e, monster.id)}
                 title='表裏を切り替え'
@@ -215,7 +264,6 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
                 ⟳
               </button>
 
-              {/* 【修正】✓ではなく選択順の番号を表示 */}
               {isSelected && (
                 <div
                   style={{

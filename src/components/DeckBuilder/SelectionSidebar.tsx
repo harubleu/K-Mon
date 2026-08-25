@@ -6,11 +6,13 @@ import { MONSTER_MASTER_LIST, MANA_MASTER_LIST } from '../../data/masterData';
 interface SelectionSidebarProps {
   monsterIds: string[]; // 選択順を保持した配列（最大3件）
   manaCounts: Record<string, number>;
+  onUpdateCount: (kanji: string, delta: number) => void;
 }
 
 export const SelectionSidebar: React.FC<SelectionSidebarProps> = ({
   monsterIds,
   manaCounts,
+  onUpdateCount,
 }) => {
   const selectedMana = Object.entries(manaCounts).filter(
     ([, count]) => count > 0,
@@ -118,24 +120,66 @@ export const SelectionSidebar: React.FC<SelectionSidebarProps> = ({
             未選択
           </p>
         ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {selectedMana.map(([kanji, count]) => {
               const master = MANA_MASTER_LIST.find((m) => m.kanji === kanji);
               return (
-                <span
+                <div
                   key={kanji}
-                  style={{
-                    backgroundColor: master?.hexColor || '#ccc',
-                    color: '#fff',
-                    textShadow: '1px 1px 2px #000',
-                    padding: '4px 8px',
-                    borderRadius: '4px',
-                    fontSize: '0.8rem',
-                    fontWeight: 'bold',
-                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
-                  {kanji}×{count}
-                </span>
+                  <span
+                    style={{
+                      backgroundColor: master?.hexColor || '#ccc',
+                      color: '#fff',
+                      textShadow: '1px 1px 2px #000',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontSize: '0.8rem',
+                      fontWeight: 'bold',
+                      flexGrow: 1,
+                    }}
+                  >
+                    {kanji}
+                  </span>
+                  <button
+                    onClick={() => onUpdateCount(kanji, -1)}
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '50%',
+                      border: '1px solid #ccc',
+                      fontSize: '0.7rem',
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    −
+                  </button>
+                  <span
+                    style={{
+                      fontSize: '0.75rem',
+                      minWidth: '14px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {count}
+                  </span>
+                  <button
+                    onClick={() => onUpdateCount(kanji, 1)}
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '50%',
+                      border: '1px solid #ccc',
+                      fontSize: '0.7rem',
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    ＋
+                  </button>
+                </div>
               );
             })}
           </div>
