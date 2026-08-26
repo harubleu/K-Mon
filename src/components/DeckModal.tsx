@@ -5,7 +5,21 @@ import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
+import { SortableDeckCard } from './GameBoard/SortableDeckCard';
 import { MoveDestinationSelector } from './MoveDestinationSelector';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  rectSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable';
 
 interface DeckModalProps {
   isOpen: boolean;
@@ -27,8 +41,8 @@ interface DeckModalProps {
     sourceZone: ZoneType,
     monsterIndex: number,
   ) => void;
-  onShuffleDeck: (side: PlayerSide) => void; // 【追加】
-  onReorderDeck: (side: PlayerSide, orderedCardIds: string[]) => void; // 【追加】
+  onShuffleDeck: (side: PlayerSide) => void;
+  onReorderDeck: (side: PlayerSide, orderedCardIds: string[]) => void;
 }
 
 export const DeckModal: React.FC<DeckModalProps> = ({
@@ -45,9 +59,16 @@ export const DeckModal: React.FC<DeckModalProps> = ({
 }) => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
-  // 【追加】並び替えモード用の状態
+  // 【変更】並び替えモード用の状態。クリックで順序を選ぶ方式から、
+  // 現在の山札のスナップショットをD&Dで直接並び替える方式に変更したため、
+  // reorderSequence(選んだ順序の部分配列)ではなく、常に「完全な並び」を保持する。
   const [isReorderMode, setIsReorderMode] = useState(false);
-  const [reorderSequence, setReorderSequence] = useState<string[]>([]);
+  const [orderedDeck, setOrderedDeck] = useState<ManaCard[]>([]);
+
+  // 【追加】並び替え専用センサー。バトル画面本体のD&Dとは独立している。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 3 } }),
+  );
 
   if (!isOpen) return null;
 
@@ -66,36 +87,37 @@ export const DeckModal: React.FC<DeckModalProps> = ({
     }
   };
 
-  // 【追加】並び替えモード関連ハンドラー
-  const handleToggleReorder = (cardId: string) => {
-    setReorderSequence((prev) =>
-      prev.includes(cardId)
-        ? prev.filter((id) => id !== cardId)
-        : [...prev, cardId],
-    );
-  };
-
   const handleStartReorder = () => {
-    setSelectedIds([]); // 通常モードの選択はクリアしておく
+    setSelectedIds([]);
+    setOrderedDeck(deck); // 現在の並びをスナップショットとして取り込む
     setIsReorderMode(true);
   };
 
   const handleConfirmReorder = () => {
-    if (reorderSequence.length > 0) {
-      onReorderDeck(side, reorderSequence);
-    }
-    setReorderSequence([]);
+    onReorderDeck(
+      side,
+      orderedDeck.map((c) => c.id),
+    );
     setIsReorderMode(false);
   };
 
   const handleCancelReorder = () => {
-    setReorderSequence([]);
     setIsReorderMode(false);
+  };
+
+  const handleDragEndReorder = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setOrderedDeck((prev) => {
+      const oldIndex = prev.findIndex((c) => c.id === active.id);
+      const newIndex = prev.findIndex((c) => c.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
   };
 
   const handleClose = () => {
     setSelectedIds([]);
-    setReorderSequence([]);
     setIsReorderMode(false);
     onClose();
   };
@@ -143,7 +165,6 @@ export const DeckModal: React.FC<DeckModalProps> = ({
             {label}の山札確認・操作 ({deck.length}枚)
           </h3>
           <div style={{ display: 'flex', gap: '8px' }}>
-            {/* 【追加】シャッフルして閉じる（並び替え中は誤操作防止のため非表示） */}
             {!isReorderMode && (
               <button
                 onClick={handleShuffleAndClose}
@@ -179,53 +200,25 @@ export const DeckModal: React.FC<DeckModalProps> = ({
         >
           {deck.length === 0 ? (
             <p style={{ color: '#888' }}>山札にカードがありません。</p>
+          ) : isReorderMode ? (
+            // 【修正】D&Dによる並び替え表示
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEndReorder}
+            >
+              <SortableContext
+                items={orderedDeck.map((c) => c.id)}
+                strategy={rectSortingStrategy}
+              >
+                {orderedDeck.map((card, index) => (
+                  <SortableDeckCard key={card.id} card={card} order={index} />
+                ))}
+              </SortableContext>
+            </DndContext>
           ) : (
+            // 通常モードの描画（従来通り）
             deck.map((card) => {
-              // 【追加】並び替えモード時のカード描画
-              if (isReorderMode) {
-                const orderIndex = reorderSequence.indexOf(card.id);
-                const isPicked = orderIndex !== -1;
-                return (
-                  <div
-                    key={card.id}
-                    onClick={() => handleToggleReorder(card.id)}
-                    style={{
-                      position: 'relative',
-                      cursor: 'pointer',
-                      border: isPicked ? '3px solid #f59e0b' : '1px solid #ccc',
-                      borderRadius: '6px',
-                      padding: '4px',
-                      backgroundColor: isPicked ? '#fff7ed' : '#fff',
-                      boxSizing: 'border-box',
-                    }}
-                  >
-                    <Card card={card} />
-                    {isPicked && (
-                      <span
-                        style={{
-                          position: 'absolute',
-                          top: '-8px',
-                          right: '-8px',
-                          backgroundColor: '#f59e0b',
-                          color: '#fff',
-                          borderRadius: '50%',
-                          width: '20px',
-                          height: '20px',
-                          fontSize: '0.7rem',
-                          fontWeight: 'bold',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        {orderIndex + 1}
-                      </span>
-                    )}
-                  </div>
-                );
-              }
-
-              // 通常モードの描画（従来通り）
               const isSelected = selectedIds.includes(card.id);
               return (
                 <div
@@ -251,7 +244,6 @@ export const DeckModal: React.FC<DeckModalProps> = ({
 
         {/* 操作アクションエリア */}
         {isReorderMode ? (
-          // 【追加】並び替えモード用の操作パネル
           <div
             style={{
               display: 'flex',
@@ -264,33 +256,22 @@ export const DeckModal: React.FC<DeckModalProps> = ({
             }}
           >
             <div style={{ fontSize: '0.8rem', color: '#92400e' }}>
-              先頭に持ってきたい順にカードをクリックしてください（
-              {reorderSequence.length}枚選択中）。
-              クリックしなかったカードは、元の順序のままその後ろに続きます。
+              カードをドラッグして好きな順番に並び替えてください。
             </div>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
                 onClick={handleConfirmReorder}
-                disabled={reorderSequence.length === 0}
                 style={{
                   padding: '6px 14px',
-                  backgroundColor:
-                    reorderSequence.length === 0 ? '#ccc' : '#f59e0b',
+                  backgroundColor: '#f59e0b',
                   color: '#fff',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor:
-                    reorderSequence.length === 0 ? 'not-allowed' : 'pointer',
+                  cursor: 'pointer',
                   fontWeight: 'bold',
                 }}
               >
                 この順番で確定
-              </button>
-              <button
-                onClick={() => setReorderSequence([])}
-                style={{ padding: '6px 14px', cursor: 'pointer' }}
-              >
-                クリア
               </button>
               <button
                 onClick={handleCancelReorder}
@@ -315,7 +296,6 @@ export const DeckModal: React.FC<DeckModalProps> = ({
               選択中のカード: {selectedIds.length}枚
             </div>
 
-            {/* 【修正】従来の「墓地へ送る」「除外する」ボタンを汎用セレクターに置き換え */}
             <MoveDestinationSelector
               currentSide={side}
               currentZone='deck'
@@ -363,7 +343,6 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                 </button>
               ))}
 
-              {/* 【追加】並び替えモードへの入り口 */}
               <button
                 onClick={handleStartReorder}
                 style={{

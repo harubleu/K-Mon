@@ -947,7 +947,7 @@ export const MONSTER_MASTER_LIST: MonsterMasterDefinition[] = [
     slotPositions: [
       '.slot-left-middle',
       '.slot-right-upper',
-      '.slot-left-lower',
+      '.slot-right-lower',
     ],
     imageUrl: '/images/monsters/06_yellow/06_11_shu_front.png',
     flippedImageUrl: '/images/monsters/06_yellow/06_11_shu_back.png',

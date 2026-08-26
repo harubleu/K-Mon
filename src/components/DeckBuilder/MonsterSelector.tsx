@@ -78,7 +78,8 @@ export const MonsterSelector: React.FC<MonsterSelectorProps> = ({
   }, [activeFolder]);
 
   const filteredMonsters = useMemo(() => {
-    if (correlationFilter === 'all') return folderFilteredMonsters;
+    if (correlationFilter === 'all' || !hasSelectedMana)
+      return folderFilteredMonsters;
     return folderFilteredMonsters.filter((m) => {
       const level = getCorrelationLevel(m);
       if (correlationFilter === 'strong') return level === 'strong';

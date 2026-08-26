@@ -140,7 +140,7 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({
         <div style={{ display: 'flex', gap: '24px' }}>
           <div
             style={{
-              flex: '3',
+              flex: '3.5',
               backgroundColor: '#fff',
               padding: '16px',
               borderRadius: '8px',
@@ -156,7 +156,7 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({
 
           <div
             style={{
-              flex: '2',
+              flex: '1.3',
               backgroundColor: '#fff',
               padding: '16px',
               borderRadius: '8px',
@@ -177,6 +177,9 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({
             monsterIds={currentBuilder.recipe.monsterIds}
             manaCounts={currentBuilder.manaCounts}
             onUpdateCount={currentBuilder.updateManaCount}
+            onClearMonsters={currentBuilder.clearMonsters}
+            onClearMana={currentBuilder.clearMana}
+            onReorderMonsters={currentBuilder.reorderMonsters}
           />
         </div>
       </div>

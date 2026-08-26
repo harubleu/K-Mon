@@ -141,6 +141,21 @@ export const useDeckBuilder = () => {
     return { monsters, deck };
   };
 
+  // 【追加】選択中モンスターのみをクリア
+  const clearMonsters = () => {
+    setRecipe((prev) => ({ ...prev, monsterIds: [] }));
+  };
+
+  // 【追加】選択中マナのみをクリア
+  const clearMana = () => {
+    setRecipe((prev) => ({ ...prev, manaCounts: {} }));
+  };
+
+  // 【追加】選択中モンスターの並び順を直接差し替える（D&D・矢印クリック両方から呼ばれる）
+  const reorderMonsters = (newOrder: string[]) => {
+    setRecipe((prev) => ({ ...prev, monsterIds: newOrder }));
+  };
+
   return {
     recipe,
     manaCounts: recipe.manaCounts,
@@ -151,5 +166,8 @@ export const useDeckBuilder = () => {
     loadPreset,
     generateGameCards,
     clearDeck,
+    clearMonsters,
+    clearMana,
+    reorderMonsters,
   };
 };
