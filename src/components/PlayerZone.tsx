@@ -5,7 +5,9 @@ import type { PlayerState, PlayerSide, ZoneType, ManaCard } from '../types'; // 
 import { MonsterZone } from './MonsterZone';
 import { Card } from './Card';
 import { CemeteryAndExileModal } from './CemeteryAndExileModal';
+import type { CemeteryAndExileModalProps } from './CemeteryAndExileModal';
 import { DeckModal } from './DeckModal';
+import type { DeckModalProps } from './DeckModal';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
@@ -40,6 +42,12 @@ interface PlayerZoneProps {
   onShuffleDeck: (side: PlayerSide) => void; // 既存のまま。DeckModalにもそのまま渡す
   onDraw: (side: PlayerSide) => void;
   onReorderDeck: (side: PlayerSide, orderedCardIds: string[]) => void;
+  onActivateEffect: (side: PlayerSide, monsterIndex: number) => boolean;
+  canActivateEffect: (side: PlayerSide, monsterIndex: number) => boolean;
+  effectSelection?: DeckModalProps['effectSelection'];
+  effectReorder?: DeckModalProps['effectReorder'];
+  effectKanjiSelect?: DeckModalProps['effectKanjiSelect'];
+  effectGraveyardSelection?: CemeteryAndExileModalProps['effectSelection'];
 }
 
 export const PlayerZone: React.FC<PlayerZoneProps> = ({
@@ -54,6 +62,12 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   onShuffleDeck,
   onDraw,
   onReorderDeck,
+  onActivateEffect,
+  canActivateEffect,
+  effectSelection = null,
+  effectReorder = null,
+  effectKanjiSelect = null,
+  effectGraveyardSelection = null,
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
@@ -90,6 +104,10 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   const isAnyModalOpen =
     isCemeteryModalOpen ||
     isDeckModalOpen ||
+    !!effectSelection ||
+    !!effectReorder ||
+    !!effectKanjiSelect ||
+    !!effectGraveyardSelection ||
     playerState.pendingDrawCards.length > 0;
 
   return (
@@ -172,6 +190,8 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           onToggleSelectMana={handleToggleSelectMana}
           onTrashMana={onTrashMana}
           onFlipMonster={onFlipMonster}
+          onActivateEffect={onActivateEffect}
+          canActivateEffect={canActivateEffect}
         />
       </div>
 
@@ -224,30 +244,59 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
 
       {/* 墓地・除外一覧・操作モーダル */}
       <CemeteryAndExileModal
-        isOpen={isCemeteryModalOpen}
+        isOpen={isCemeteryModalOpen || !!effectGraveyardSelection}
         cemetery={playerState.cemetery}
         exile={playerState.exile}
         monsters={playerState.monsters}
         side={side}
         label={label}
-        onClose={() => setIsCemeteryModalOpen(false)}
+        onClose={() => {
+          if (effectGraveyardSelection) {
+            effectGraveyardSelection.onCancel();
+            return;
+          }
+          setIsCemeteryModalOpen(false);
+        }}
         onRecover={onRecover}
         onMoveCards={onMoveCards}
         onEquipSpecific={onEquipSpecific}
+        effectSelection={effectGraveyardSelection}
       />
 
       {/* 山札確認・操作モーダル */}
       <DeckModal
-        isOpen={isDeckModalOpen}
+        isOpen={
+          isDeckModalOpen ||
+          !!effectSelection ||
+          !!effectReorder ||
+          !!effectKanjiSelect
+        }
         deck={playerState.deck}
         monsters={playerState.monsters}
         side={side}
         label={label}
-        onClose={() => setIsDeckModalOpen(false)}
+        onClose={() => {
+          if (effectSelection) {
+            effectSelection.onCancel();
+            return;
+          }
+          if (effectReorder) {
+            effectReorder.onCancel();
+            return;
+          }
+          if (effectKanjiSelect) {
+            effectKanjiSelect.onCancel();
+            return;
+          }
+          setIsDeckModalOpen(false);
+        }}
         onMoveCards={onMoveCards}
         onEquipSpecific={onEquipSpecific}
         onShuffleDeck={onShuffleDeck}
         onReorderDeck={onReorderDeck}
+        effectSelection={effectSelection}
+        effectReorder={effectReorder}
+        effectKanjiSelect={effectKanjiSelect}
       />
 
       {/* ドロー確認モーダル */}

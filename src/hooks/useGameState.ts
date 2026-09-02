@@ -1,6 +1,84 @@
 // src/hooks/useGameState.ts
+
 import { useReducer, useState, useCallback } from 'react';
-import type { GameState, GameAction, ManaCard } from '../types';
+import type {
+  GameState,
+  GameAction,
+  ManaCard,
+  ActionLog,
+  LogType,
+  GameStatus,
+  ZoneType,
+  PlayerSide,
+} from '../types';
+
+// --- 追加: ログ生成・勝敗判定用ヘルパー関数 ---
+const createLog = (type: LogType, message: string): ActionLog => ({
+  id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+  timestamp: new Date().toLocaleTimeString('ja-JP', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }),
+  type,
+  message,
+});
+
+const getSideLabel = (side: PlayerSide): string =>
+  side === 'player' ? '自分' : '相手';
+const getZoneLabel = (zone: ZoneType): string => {
+  switch (zone) {
+    case 'deck':
+      return '山札';
+    case 'cemetery':
+      return '墓地';
+    case 'exile':
+      return '除外エリア';
+    case 'pending':
+      return '保留領域';
+    default:
+      return zone;
+  }
+};
+
+const evaluateGameStatus = (
+  playerDeckCount: number,
+  opponentDeckCount: number,
+  currentStatus: GameStatus,
+): { status: GameStatus; alertLog?: ActionLog } => {
+  // すでに決着がついている場合は判定・アラートをスキップ
+  if (currentStatus !== 'playing') return { status: currentStatus };
+
+  if (playerDeckCount <= 0 && opponentDeckCount <= 0) {
+    return {
+      status: 'draw',
+      alertLog: createLog(
+        'alert',
+        '両者の山札が0枚になりました。引き分けです。',
+      ),
+    };
+  }
+  if (playerDeckCount <= 0) {
+    return {
+      status: 'opponent_win',
+      alertLog: createLog(
+        'alert',
+        '自分の山札が0枚になりました。相手の勝利です。',
+      ),
+    };
+  }
+  if (opponentDeckCount <= 0) {
+    return {
+      status: 'player_win',
+      alertLog: createLog(
+        'alert',
+        '相手の山札が0枚になりました。自分の勝利です。',
+      ),
+    };
+  }
+  return { status: 'playing' };
+};
+// ----------------------------------------------------
 
 // 初期状態
 const initialState: GameState = {
@@ -62,10 +140,12 @@ const initialState: GameState = {
       },
     ],
   },
-  // フェーズ2: ターン進行管理用の初期状態
   turnPlayer: 'player',
   turnCount: 1,
   currentPhase: 'start',
+  // 追加: ログと勝敗状態
+  logs: [],
+  gameStatus: 'playing',
 };
 
 // 配列を不変にシャッフルするヘルパー関数 (Fisher-Yates)
@@ -81,37 +161,40 @@ const shuffleArray = <T>(array: T[]): T[] => {
 // Stateを更新する純粋関数 (ルールの自動チェックは行わない)
 const gameReducer = (state: GameState, action: GameAction): GameState => {
   switch (action.type) {
-    // ----------------------------------------------------
-    // フェーズ4 追加: Undo/Redo用の状態復元アクション
-    // ----------------------------------------------------
     case 'RESTORE_STATE': {
       return action.payload;
     }
 
-    // ----------------------------------------------------
-    // ターン切替処理（フェーズ進行から簡略化）
-    // ----------------------------------------------------
     case 'NEXT_PHASE': {
       const { turnPlayer, turnCount } = state;
+      const nextTurnPlayer = turnPlayer === 'player' ? 'opponent' : 'player';
+      const nextTurnCount =
+        turnPlayer === 'opponent' ? turnCount + 1 : turnCount;
+
+      const newLogs = [
+        createLog(
+          'system',
+          `ターン ${nextTurnCount} 開始 (${getSideLabel(nextTurnPlayer)}のターン)`,
+        ),
+        ...state.logs,
+      ];
+
       return {
         ...state,
-        turnPlayer: turnPlayer === 'player' ? 'opponent' : 'player',
-        turnCount: turnPlayer === 'opponent' ? turnCount + 1 : turnCount,
+        turnPlayer: nextTurnPlayer,
+        turnCount: nextTurnCount,
+        logs: newLogs,
       };
     }
 
-    // ----------------------------------------------------
-    // 既存の手動アクション
-    // ----------------------------------------------------
     case 'AUTO_DRAW': {
-      // (※手動でのドロー用として既存ロジックを維持。UIからは削除予定ですが、テスト用に残します)
       const targetSide = action.payload.player;
       const player = state[targetSide];
       if (player.deck.length === 0) return state;
 
       const [drawnCard, ...remainingDeck] = player.deck;
 
-      return {
+      const nextState = {
         ...state,
         [targetSide]: {
           ...player,
@@ -119,6 +202,19 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           pendingDrawCards: [...player.pendingDrawCards, drawnCard],
         },
       };
+
+      const { status, alertLog } = evaluateGameStatus(
+        nextState.player.deck.length,
+        nextState.opponent.deck.length,
+        state.gameStatus,
+      );
+      const newLogs = [
+        createLog('draw', `${getSideLabel(targetSide)}が1枚ドローしました。`),
+        ...state.logs,
+      ];
+      if (alertLog) newLogs.unshift(alertLog);
+
+      return { ...nextState, logs: newLogs, gameStatus: status };
     }
 
     case 'EQUIP_MANA': {
@@ -128,18 +224,16 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       if (player.deck.length === 0) return state;
 
       const [drawnCard, ...remainingDeck] = player.deck;
-
       const updatedMonsters = [...player.monsters];
       const monster = updatedMonsters[monsterIndex];
 
       const newEquippedMana = [...monster.equippedMana];
-      // 【修正】最初の空きスロット（null）を探す
       const emptyIndex = newEquippedMana.findIndex((m) => m === null);
 
       if (emptyIndex !== -1) {
-        newEquippedMana[emptyIndex] = drawnCard; // 空き枠に装備
+        newEquippedMana[emptyIndex] = drawnCard;
       } else {
-        newEquippedMana.push(drawnCard); // 空きがなければ末尾に追加
+        newEquippedMana.push(drawnCard);
       }
 
       updatedMonsters[monsterIndex] = {
@@ -147,7 +241,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         equippedMana: newEquippedMana,
       };
 
-      return {
+      const nextState = {
         ...state,
         [side]: {
           ...player,
@@ -155,6 +249,22 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           monsters: updatedMonsters,
         },
       };
+
+      const { status, alertLog } = evaluateGameStatus(
+        nextState.player.deck.length,
+        nextState.opponent.deck.length,
+        state.gameStatus,
+      );
+      const newLogs = [
+        createLog(
+          'mana',
+          `${getSideLabel(side)}の「${monster.name || `モンスター${monsterIndex + 1}`}」にマナを装備しました。`,
+        ),
+        ...state.logs,
+      ];
+      if (alertLog) newLogs.unshift(alertLog);
+
+      return { ...nextState, logs: newLogs, gameStatus: status };
     }
 
     case 'TRASH_MANA': {
@@ -168,18 +278,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       let remainingMana: (ManaCard | null)[] = [];
 
       if (manaCardIds === 'all') {
-        // 【修正】nullを除外して実際に存在するカードだけを抽出
         trashedCards = monster.equippedMana.filter(
           (m): m is ManaCard => m !== null,
         );
-        // 【修正】枠の数だけnullで埋める（スロット位置を維持するため）
         remainingMana = new Array(monster.equippedMana.length).fill(null);
       } else {
-        // 【修正】指定されたカードのみ抽出し、TypeScriptの型を確定させる
         trashedCards = monster.equippedMana.filter(
           (m): m is ManaCard => m !== null && manaCardIds.includes(m.id),
         );
-        // 【修正】指定されたカードIDの箇所のみ null に置換し、それ以外（位置情報含む）はそのまま残す
         remainingMana = monster.equippedMana.map((m) =>
           m !== null && manaCardIds.includes(m.id) ? null : m,
         );
@@ -191,6 +297,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         equippedMana: remainingMana,
       };
 
+      const newLogs = [
+        createLog(
+          'mana',
+          `${getSideLabel(side)}の「${monster.name || `モンスター${monsterIndex + 1}`}」から ${trashedCards.length} 枚のマナを${getZoneLabel(destination)}へ破棄しました。`,
+        ),
+        ...state.logs,
+      ];
+
       return {
         ...state,
         [side]: {
@@ -198,6 +312,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           monsters: updatedMonsters,
           [destination]: [...player[destination], ...trashedCards],
         },
+        logs: newLogs,
       };
     }
 
@@ -213,7 +328,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const damagedCards = targetPlayer.deck.slice(0, actualAmount);
       const remainingDeck = targetPlayer.deck.slice(actualAmount);
 
-      return {
+      const nextState = {
         ...state,
         [newTargetSide]: {
           ...targetPlayer,
@@ -221,6 +336,22 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           cemetery: [...targetPlayer.cemetery, ...damagedCards],
         },
       };
+
+      const { status, alertLog } = evaluateGameStatus(
+        nextState.player.deck.length,
+        nextState.opponent.deck.length,
+        state.gameStatus,
+      );
+      const newLogs = [
+        createLog(
+          'attack',
+          `${getSideLabel(newTargetSide)}の山札から ${damagedCards.length} 枚が墓地へ送られました。`,
+        ),
+        ...state.logs,
+      ];
+      if (alertLog) newLogs.unshift(alertLog);
+
+      return { ...nextState, logs: newLogs, gameStatus: status };
     }
 
     case 'RECOVER': {
@@ -242,7 +373,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const newDeck = shuffleArray([...player.deck, ...recoveredCards]);
 
-      return {
+      const nextState = {
         ...state,
         [side]: {
           ...player,
@@ -250,6 +381,22 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           cemetery: remainingCemetery,
         },
       };
+
+      const { status, alertLog } = evaluateGameStatus(
+        nextState.player.deck.length,
+        nextState.opponent.deck.length,
+        state.gameStatus,
+      );
+      const newLogs = [
+        createLog(
+          'system',
+          `${getSideLabel(side)}の墓地から ${recoveredCards.length} 枚のカードを山札に戻しシャッフルしました。`,
+        ),
+        ...state.logs,
+      ];
+      if (alertLog) newLogs.unshift(alertLog);
+
+      return { ...nextState, logs: newLogs, gameStatus: status };
     }
 
     case 'FLIP_MONSTER': {
@@ -257,10 +404,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const player = state[side];
 
       const updatedMonsters = [...player.monsters];
+      const nextIsFlipped = !updatedMonsters[monsterIndex].isFlipped;
+
       updatedMonsters[monsterIndex] = {
         ...updatedMonsters[monsterIndex],
-        isFlipped: !updatedMonsters[monsterIndex].isFlipped,
+        isFlipped: nextIsFlipped,
       };
+
+      const logMsg = `${getSideLabel(side)}の「${updatedMonsters[monsterIndex].name || `モンスター${monsterIndex + 1}`}」を${nextIsFlipped ? '裏面(スロット面)' : '表面(イラスト面)'}に表示切替しました。`;
 
       return {
         ...state,
@@ -268,6 +419,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           ...player,
           monsters: updatedMonsters,
         },
+        logs: [createLog('system', logMsg), ...state.logs],
       };
     }
 
@@ -280,6 +432,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         targetSlotIndex,
       } = action.payload;
       const player = state[side];
+
       if (!player) {
         console.warn(
           '[EQUIP_SPECIFIC_MANA] 不正な side が渡されたため処理を中断しました:',
@@ -288,7 +441,6 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         return state;
       }
 
-      // 移動元の配列を安全に取得 (pending対応)
       const sourceKey =
         sourceZone === 'pending' ? 'pendingDrawCards' : sourceZone;
       const sourceArray = player[sourceKey] || [];
@@ -303,16 +455,12 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
         const newEquippedMana = [...monster.equippedMana];
 
-        // 【修正】targetSlotIndex が指定されている場合、その位置にピンポイントで配置
         if (targetSlotIndex !== undefined) {
-          // 配列長が指定インデックスに満たない場合は null でパディングして枠を拡張する
           while (newEquippedMana.length <= targetSlotIndex) {
             newEquippedMana.push(null);
           }
           newEquippedMana[targetSlotIndex] = cardToEquip;
         } else {
-          // ボタン経由など枠指定がない場合、まずは monster.slots の漢字と一致する空き枠を優先的に探す。
-          // 見つからなければ従来通り最初の空き枠にフォールバックする。
           const matchingEmptyIndex = monster.slots.findIndex(
             (requiredKanji, i) =>
               requiredKanji === cardToEquip.kanji &&
@@ -337,7 +485,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         };
       });
 
-      return {
+      const nextState = {
         ...state,
         [side]: {
           ...player,
@@ -345,6 +493,17 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           monsters: updatedMonsters,
         },
       };
+
+      const logMsg = `${getSideLabel(side)}の「${player.monsters[monsterIndex].name || `モンスター${monsterIndex + 1}`}」にマナ「${cardToEquip.kanji}」を装備しました。`;
+      const { status, alertLog } = evaluateGameStatus(
+        nextState.player.deck.length,
+        nextState.opponent.deck.length,
+        state.gameStatus,
+      );
+      const newLogs = [createLog('mana', logMsg), ...state.logs];
+      if (alertLog) newLogs.unshift(alertLog);
+
+      return { ...nextState, logs: newLogs, gameStatus: status };
     }
 
     case 'MOVE_CARD_BETWEEN_ZONES': {
@@ -368,18 +527,21 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         (card) => !cardIds.includes(card.id),
       );
 
+      if (movingCards.length === 0) return state;
+
       const targetKey =
         targetZone === 'pending' ? 'pendingDrawCards' : targetZone;
 
+      let nextState: GameState;
+
       if (sourceSide === targetSide) {
-        // 【修正前と同じ】同一プレイヤー内の移動
         const targetList = sourcePlayer[targetKey] || [];
         const newTargetList =
           targetZone === 'deck'
             ? [...movingCards, ...targetList]
             : [...targetList, ...movingCards];
 
-        return {
+        nextState = {
           ...state,
           [sourceSide]: {
             ...sourcePlayer,
@@ -387,35 +549,46 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
             [targetKey]: newTargetList,
           },
         };
+      } else {
+        const targetPlayer = state[targetSide];
+        const targetList = targetPlayer[targetKey] || [];
+        const newTargetList =
+          targetZone === 'deck'
+            ? [...movingCards, ...targetList]
+            : [...targetList, ...movingCards];
+
+        nextState = {
+          ...state,
+          [sourceSide]: {
+            ...sourcePlayer,
+            [sourceKey]: newSourceList,
+          },
+          [targetSide]: {
+            ...targetPlayer,
+            [targetKey]: newTargetList,
+          },
+        };
       }
 
-      // 【新規】プレイヤーをまたぐ移動。sourceSide側とtargetSide側、両方のstateを更新する
-      const targetPlayer = state[targetSide];
-      const targetList = targetPlayer[targetKey] || [];
-      const newTargetList =
-        targetZone === 'deck'
-          ? [...movingCards, ...targetList]
-          : [...targetList, ...movingCards];
+      const logType: LogType =
+        sourceZone === 'deck' && targetZone === 'pending' ? 'draw' : 'system';
+      const moveMsg = `${getSideLabel(sourceSide)}の${getZoneLabel(sourceZone)}から${getSideLabel(targetSide)}の${getZoneLabel(targetZone)}へ ${movingCards.length} 枚カードを移動しました。`;
 
-      return {
-        ...state,
-        [sourceSide]: {
-          ...sourcePlayer,
-          [sourceKey]: newSourceList,
-        },
-        [targetSide]: {
-          ...targetPlayer,
-          [targetKey]: newTargetList,
-        },
-      };
+      const { status, alertLog } = evaluateGameStatus(
+        nextState.player.deck.length,
+        nextState.opponent.deck.length,
+        state.gameStatus,
+      );
+      const newLogs = [createLog(logType, moveMsg), ...state.logs];
+      if (alertLog) newLogs.unshift(alertLog);
+
+      return { ...nextState, logs: newLogs, gameStatus: status };
     }
 
-    // 【追加】新規ケース
     case 'REORDER_DECK': {
       const { side, orderedCardIds } = action.payload;
       const player = state[side];
 
-      // 指定された順序のカードを先頭に、残りは元の相対順序のまま後ろに続ける
       const orderedCards = orderedCardIds
         .map((id) => player.deck.find((c) => c.id === id))
         .filter((c): c is ManaCard => c !== undefined);
@@ -429,6 +602,13 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           ...player,
           deck: [...orderedCards, ...remainingCards],
         },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の山札の並び順を変更しました。`,
+          ),
+          ...state.logs,
+        ],
       };
     }
 
@@ -442,10 +622,28 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           ...player,
           deck: shuffleArray(player.deck),
         },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の山札をシャッフルしました。`,
+          ),
+          ...state.logs,
+        ],
       };
     }
 
     case 'SET_INITIAL_STATE': {
+      const pDeckCount = action.payload.player.deck.length;
+      const oDeckCount = action.payload.opponent.deck.length;
+      const { status, alertLog } = evaluateGameStatus(
+        pDeckCount,
+        oDeckCount,
+        'playing',
+      );
+
+      const initialLogs = [createLog('system', '対戦を開始しました。')];
+      if (alertLog) initialLogs.unshift(alertLog);
+
       return {
         ...state,
         player: {
@@ -458,6 +656,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           monsters: action.payload.opponent.monsters,
           deck: action.payload.opponent.deck,
         },
+        logs: initialLogs,
+        gameStatus: status,
       };
     }
 
@@ -465,6 +665,13 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       return {
         ...state,
         turnPlayer: action.payload.turnPlayer,
+        logs: [
+          createLog(
+            'system',
+            `ターンプレイヤーが ${getSideLabel(action.payload.turnPlayer)} に変更されました。`,
+          ),
+          ...state.logs,
+        ],
       };
     }
 
@@ -476,18 +683,15 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 export const useGameState = () => {
   const [gameState, dispatch] = useReducer(gameReducer, initialState);
 
-  // 修正: 過去(Undo用)と未来(Redo用)のスタックを別々に保持 (最大20手)
   const [past, setPast] = useState<GameState[]>([]);
   const [future, setFuture] = useState<GameState[]>([]);
 
-  // 状態を変更するアクションが発行されたら履歴に保存するラップ関数
   const dispatchWithHistory = useCallback(
     (action: GameAction) => {
       if (
         action.type !== 'RESTORE_STATE' &&
         action.type !== 'SET_INITIAL_STATE'
       ) {
-        // ドローモーダル内での操作（pending領域からのカード移動・装備）は中間状態のため履歴追加をスキップ
         const isPendingAction =
           (action.type === 'EQUIP_SPECIFIC_MANA' &&
             action.payload.sourceZone === 'pending') ||
@@ -499,11 +703,9 @@ export const useGameState = () => {
             const nextPast = [...prev, gameState];
             return nextPast.length > 20 ? nextPast.slice(1) : nextPast;
           });
-          // 新しい操作が行われたらRedo(未来)の履歴は破棄する
           setFuture([]);
         }
       } else if (action.type === 'SET_INITIAL_STATE') {
-        // 初期化時は両方の履歴をリセット
         setPast([]);
         setFuture([]);
       }
@@ -512,25 +714,21 @@ export const useGameState = () => {
     [gameState],
   );
 
-  // 1手戻す (Undo) 処理
   const handleUndo = useCallback(() => {
     if (past.length === 0) return;
     const previousState = past[past.length - 1];
 
     setPast((prev: GameState[]) => prev.slice(0, -1));
-    // 現在の状態を「未来」スタックに退避
     setFuture((prev: GameState[]) => [gameState, ...prev].slice(0, 20));
 
     dispatch({ type: 'RESTORE_STATE', payload: previousState });
   }, [past, gameState]);
 
-  // 追加: やり直す (Redo) 処理
   const handleRedo = useCallback(() => {
     if (future.length === 0) return;
     const nextState = future[0];
 
     setFuture((prev: GameState[]) => prev.slice(1));
-    // 現在の状態を「過去」スタックに退避
     setPast((prev: GameState[]) => {
       const nextPast = [...prev, gameState];
       return nextPast.length > 20 ? nextPast.slice(1) : nextPast;
@@ -544,7 +742,7 @@ export const useGameState = () => {
     dispatch: dispatchWithHistory,
     undo: handleUndo,
     canUndo: past.length > 0,
-    redo: handleRedo, // 追加
-    canRedo: future.length > 0, // 追加
+    redo: handleRedo,
+    canRedo: future.length > 0,
   };
 };

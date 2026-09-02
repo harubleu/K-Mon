@@ -21,7 +21,7 @@ import {
   arrayMove,
 } from '@dnd-kit/sortable';
 
-interface DeckModalProps {
+export interface DeckModalProps {
   isOpen: boolean;
   deck: ManaCard[];
   side: PlayerSide;
@@ -43,6 +43,24 @@ interface DeckModalProps {
   ) => void;
   onShuffleDeck: (side: PlayerSide) => void;
   onReorderDeck: (side: PlayerSide, orderedCardIds: string[]) => void;
+  effectSelection?: {
+    constraint: { min: number; max: number };
+    kanjiFilter?: string[];
+    actionLabel: string;
+    onConfirm: (selectedCardIds: string[]) => void;
+    onCancel: () => void;
+  } | null;
+  effectReorder?: {
+    scope: 'full' | { partialTopCount: number };
+    onConfirm: (orderedCardIds: string[]) => void;
+    onCancel: () => void;
+  } | null;
+  effectKanjiSelect?: {
+    revealScope: 'full' | number;
+    kanjiCount: number;
+    onConfirm: (selectedKanji: string[]) => void;
+    onCancel: () => void;
+  } | null;
 }
 
 export const DeckModal: React.FC<DeckModalProps> = ({
@@ -56,14 +74,29 @@ export const DeckModal: React.FC<DeckModalProps> = ({
   onEquipSpecific,
   onShuffleDeck,
   onReorderDeck,
+  effectSelection = null, // 【追加】
+  effectReorder = null, // 【追加】
+  effectKanjiSelect = null,
 }) => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-
+  const [selectedKanji, setSelectedKanji] = useState<string[]>([]);
   // 【変更】並び替えモード用の状態。クリックで順序を選ぶ方式から、
   // 現在の山札のスナップショットをD&Dで直接並び替える方式に変更したため、
   // reorderSequence(選んだ順序の部分配列)ではなく、常に「完全な並び」を保持する。
   const [isReorderMode, setIsReorderMode] = useState(false);
   const [orderedDeck, setOrderedDeck] = useState<ManaCard[]>([]);
+
+  React.useEffect(() => {
+    if (!effectReorder) return;
+    setSelectedIds([]);
+    const snapshot =
+      effectReorder.scope === 'full'
+        ? deck
+        : deck.slice(0, effectReorder.scope.partialTopCount);
+    setOrderedDeck(snapshot);
+    setIsReorderMode(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectReorder]);
 
   // 【追加】並び替え専用センサー。バトル画面本体のD&Dとは独立している。
   const sensors = useSensors(
@@ -71,6 +104,13 @@ export const DeckModal: React.FC<DeckModalProps> = ({
   );
 
   if (!isOpen) return null;
+
+  // 【追加】effectKanjiSelectがある場合、表示対象を公開範囲に限定する(派: 上から8枚のみ)
+  const displayedDeck = effectKanjiSelect
+    ? effectKanjiSelect.revealScope === 'full'
+      ? deck
+      : deck.slice(0, effectKanjiSelect.revealScope)
+    : deck;
 
   const handleToggleCard = (cardId: string) => {
     setSelectedIds((prev) =>
@@ -94,6 +134,11 @@ export const DeckModal: React.FC<DeckModalProps> = ({
   };
 
   const handleConfirmReorder = () => {
+    if (effectReorder) {
+      effectReorder.onConfirm(orderedDeck.map((c) => c.id));
+      setIsReorderMode(false);
+      return;
+    }
     onReorderDeck(
       side,
       orderedDeck.map((c) => c.id),
@@ -102,6 +147,9 @@ export const DeckModal: React.FC<DeckModalProps> = ({
   };
 
   const handleCancelReorder = () => {
+    if (effectReorder) {
+      effectReorder.onCancel();
+    }
     setIsReorderMode(false);
   };
 
@@ -118,6 +166,7 @@ export const DeckModal: React.FC<DeckModalProps> = ({
 
   const handleClose = () => {
     setSelectedIds([]);
+    setSelectedKanji([]);
     setIsReorderMode(false);
     onClose();
   };
@@ -165,7 +214,7 @@ export const DeckModal: React.FC<DeckModalProps> = ({
             {label}の山札確認・操作 ({deck.length}枚)
           </h3>
           <div style={{ display: 'flex', gap: '8px' }}>
-            {!isReorderMode && (
+            {!isReorderMode && !effectSelection && !effectReorder && (
               <button
                 onClick={handleShuffleAndClose}
                 style={{ cursor: 'pointer', padding: '4px 10px' }}
@@ -185,6 +234,14 @@ export const DeckModal: React.FC<DeckModalProps> = ({
           side={side}
           idPrefix='modal_draw_summary'
         />
+
+        {effectKanjiSelect && effectKanjiSelect.revealScope !== 'full' && (
+          <div
+            style={{ fontSize: '0.8rem', color: '#6366f1', margin: '4px 0' }}
+          >
+            山札の上から{effectKanjiSelect.revealScope}枚を公開しています
+          </div>
+        )}
 
         {/* 山札カード一覧 */}
         <div
@@ -217,15 +274,33 @@ export const DeckModal: React.FC<DeckModalProps> = ({
               </SortableContext>
             </DndContext>
           ) : (
-            // 通常モードの描画（従来通り）
-            deck.map((card) => {
-              const isSelected = selectedIds.includes(card.id);
+            // 通常モードの描画。effectKanjiSelect時は漢字単位でのハイライトに切り替える
+            displayedDeck.map((card) => {
+              const isSelected = effectKanjiSelect
+                ? selectedKanji.includes(card.kanji)
+                : selectedIds.includes(card.id);
+              const isSelectable =
+                effectKanjiSelect ||
+                !effectSelection?.kanjiFilter ||
+                effectSelection.kanjiFilter.includes(card.kanji);
               return (
                 <div
                   key={card.id}
-                  onClick={() => handleToggleCard(card.id)}
+                  onClick={() => {
+                    if (!isSelectable) return;
+                    if (effectKanjiSelect) {
+                      setSelectedKanji((prev) =>
+                        prev.includes(card.kanji)
+                          ? prev.filter((k) => k !== card.kanji)
+                          : [...prev, card.kanji],
+                      );
+                    } else {
+                      handleToggleCard(card.id);
+                    }
+                  }}
                   style={{
-                    cursor: 'pointer',
+                    cursor: isSelectable ? 'pointer' : 'not-allowed',
+                    opacity: isSelectable ? 1 : 0.35,
                     border: isSelected ? '3px solid #007bff' : '1px solid #ccc',
                     borderRadius: '6px',
                     padding: '4px',
@@ -275,6 +350,105 @@ export const DeckModal: React.FC<DeckModalProps> = ({
               </button>
               <button
                 onClick={handleCancelReorder}
+                style={{ padding: '6px 14px', cursor: 'pointer' }}
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        ) : effectKanjiSelect ? (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              padding: '8px',
+              backgroundColor: '#eef2ff',
+              borderRadius: '4px',
+              border: '1px solid #6366f1',
+            }}
+          >
+            <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+              漢字の種類を{effectKanjiSelect.kanjiCount}
+              つ選択してください（現在: {selectedKanji.length}/
+              {effectKanjiSelect.kanjiCount}）
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  effectKanjiSelect.onConfirm(selectedKanji);
+                  setSelectedKanji([]);
+                }}
+                disabled={selectedKanji.length !== effectKanjiSelect.kanjiCount}
+                style={{
+                  padding: '6px 14px',
+                  backgroundColor: '#6366f1',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                選択した種類を墓地へ送る
+              </button>
+              <button
+                onClick={() => {
+                  effectKanjiSelect.onCancel();
+                  setSelectedKanji([]);
+                }}
+                style={{ padding: '6px 14px', cursor: 'pointer' }}
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        ) : effectSelection ? (
+          // 【追加】効果解決モード用パネル
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              padding: '8px',
+              backgroundColor: '#eef2ff',
+              borderRadius: '4px',
+              border: '1px solid #6366f1',
+            }}
+          >
+            <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+              {effectSelection.constraint.min === effectSelection.constraint.max
+                ? `${effectSelection.constraint.max}枚選択してください`
+                : `最大${effectSelection.constraint.max}枚まで選択できます`}
+              （現在: {selectedIds.length}枚）
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  effectSelection.onConfirm(selectedIds);
+                  setSelectedIds([]);
+                }}
+                disabled={
+                  selectedIds.length < effectSelection.constraint.min ||
+                  selectedIds.length > effectSelection.constraint.max
+                }
+                style={{
+                  padding: '6px 14px',
+                  backgroundColor: '#6366f1',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                }}
+              >
+                {effectSelection.actionLabel}
+              </button>
+              <button
+                onClick={() => {
+                  effectSelection.onCancel();
+                  setSelectedIds([]);
+                }}
                 style={{ padding: '6px 14px', cursor: 'pointer' }}
               >
                 キャンセル

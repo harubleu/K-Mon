@@ -7,6 +7,8 @@ import { ManaSelector } from './ManaSelector';
 import type { ManaCard, MonsterCard } from '../../types';
 import { PresetDeckPanel } from './PresetDeckPanel';
 import { SelectionSidebar } from './SelectionSidebar';
+import { MyDeckStoragePanel } from '../MyDeckStoragePanel';
+import { useDeckStorage } from '../../hooks/useDeckStorage';
 
 interface DeckBuilderProps {
   playerBuilder: ReturnType<typeof useDeckBuilder>;
@@ -25,9 +27,12 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({
   onStartGame,
 }) => {
   const [activeTab, setActiveTab] = useState<'player' | 'opponent'>('player');
-
+  const [isOpen, setIsOpen] = useState(false);
   const currentBuilder =
     activeTab === 'player' ? playerBuilder : opponentBuilder;
+
+  // デッキ保存・読み込み用フックの呼び出し
+  const deckStorage = useDeckStorage();
 
   const handleStart = () => {
     if (
@@ -135,6 +140,45 @@ export const DeckBuilder: React.FC<DeckBuilderProps> = ({
           onLoadPreset={currentBuilder.loadPreset}
           onClearDeck={currentBuilder.clearDeck}
         />
+
+        {/* 追加: マイデッキ保存・デッキコード管理パネル */}
+        <div
+          style={{
+            marginBottom: '20px',
+            padding: '12px',
+            backgroundColor: '#fff',
+            borderRadius: '8px',
+            border: '1px solid #ccc',
+            width: '100%',
+            boxSizing: 'border-box',
+          }}
+        >
+          <div
+            onClick={() => setIsOpen((prev) => !prev)}
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              cursor: 'pointer',
+            }}
+          >
+            <h3 style={{ margin: 0, fontSize: '1rem' }}>マイデッキ保存</h3>
+            <span style={{ fontSize: '0.85rem', color: '#555' }}>
+              {isOpen ? '▲ 閉じる' : '▼ 開く'}
+            </span>
+          </div>
+          {isOpen && (
+            <div style={{ marginTop: '12px' }}>
+              <MyDeckStoragePanel
+                currentMonsterIds={currentBuilder.recipe.monsterIds}
+                currentManaCounts={currentBuilder.manaCounts}
+                onLoadDeck={(deck) =>
+                  currentBuilder.loadPreset(deckStorage.toPresetDeck(deck))
+                }
+              />
+            </div>
+          )}
+        </div>
 
         {/* 左右3分割レイアウト */}
         <div style={{ display: 'flex', gap: '24px' }}>

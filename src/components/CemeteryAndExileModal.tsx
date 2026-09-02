@@ -8,7 +8,7 @@ import { DraggableMana } from './GameBoard/DraggableMana';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
 import { MoveDestinationSelector } from './MoveDestinationSelector';
 
-interface CemeteryAndExileModalProps {
+export interface CemeteryAndExileModalProps {
   isOpen: boolean;
   cemetery: ManaCard[];
   exile: ManaCard[];
@@ -34,6 +34,13 @@ interface CemeteryAndExileModalProps {
     sourceZone: ZoneType,
     monsterIndex: number,
   ) => void;
+  effectSelection?: {
+    constraint: { min: number; max: number };
+    kanjiFilter?: string[];
+    actionLabel: string;
+    onConfirm: (selectedCardIds: string[]) => void;
+    onCancel: () => void;
+  } | null;
 }
 
 export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
@@ -46,6 +53,7 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
   onClose,
   onMoveCards,
   onEquipSpecific,
+  effectSelection = null,
 }) => {
   const [activeTab, setActiveTab] = useState<'cemetery' | 'exile'>('cemetery');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -53,6 +61,11 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
   useEffect(() => {
     setSelectedIds([]);
   }, [activeTab, isOpen]);
+
+  // 【追加】effectSelectionが有効な間は墓地タブに固定する(対象効果は常にcemeteryが対象のため)
+  useEffect(() => {
+    if (effectSelection) setActiveTab('cemetery');
+  }, [effectSelection]);
 
   if (!isOpen) return null;
 
@@ -136,10 +149,11 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
             墓地 ({cemetery.length}枚)
           </div>
           <div
-            onClick={() => setActiveTab('exile')}
+            onClick={() => !effectSelection && setActiveTab('exile')}
             style={{
               padding: '8px 16px',
-              cursor: 'pointer',
+              cursor: effectSelection ? 'not-allowed' : 'pointer',
+              opacity: effectSelection ? 0.4 : 1,
               fontWeight: 'bold',
               borderBottom:
                 activeTab === 'exile' ? '3px solid #dc3545' : 'none',
@@ -173,12 +187,16 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
           ) : (
             currentCards.map((card) => {
               const isSelected = selectedIds.includes(card.id);
+              const isSelectable =
+                !effectSelection?.kanjiFilter ||
+                effectSelection.kanjiFilter.includes(card.kanji);
               return (
                 <div
                   key={card.id}
-                  onClick={() => handleToggleCard(card.id)}
+                  onClick={() => isSelectable && handleToggleCard(card.id)}
                   style={{
-                    cursor: 'pointer',
+                    cursor: isSelectable ? 'pointer' : 'not-allowed',
+                    opacity: isSelectable ? 1 : 0.35,
                     border: isSelected ? '3px solid #007bff' : '1px solid #ccc',
                     borderRadius: '6px',
                     padding: '4px',
@@ -195,80 +213,134 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
         </div>
 
         {/* アクション領域 */}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            padding: '8px',
-            backgroundColor: '#f8f9fa',
-            borderRadius: '4px',
-            marginTop: '16px',
-          }}
-        >
-          <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
-            選択中のカード: {selectedIds.length}枚
-          </div>
-
-          {/* 【修正】タブごとに出し分けていた3つのボタンを汎用セレクターに置き換え */}
-          <MoveDestinationSelector
-            currentSide={side}
-            currentZone={activeTab}
-            selectedCount={selectedIds.length}
-            onExecute={(targetSide, targetZone) => {
-              onMoveCards({
-                sourceSide: side,
-                targetSide,
-                cardIds: selectedIds,
-                sourceZone: activeTab,
-                targetZone,
-              });
-              setSelectedIds([]);
-            }}
-          />
-
+        {effectSelection ? (
           <div
             style={{
               display: 'flex',
+              flexDirection: 'column',
               gap: '8px',
-              flexWrap: 'wrap',
-              alignItems: 'center',
+              padding: '8px',
+              backgroundColor: '#eef2ff',
+              borderRadius: '4px',
+              border: '1px solid #6366f1',
+              marginTop: '16px',
             }}
           >
-            <span
-              style={{
-                borderLeft: '1px solid #ccc',
-                margin: '0 4px',
-                height: '24px',
-              }}
-            ></span>
-
-            {[0, 1, 2].map((index) => (
-              <DroppableSlot
-                key={index}
-                side={side}
-                monsterIndex={index}
-                slotIndex={0}
-                slotName=''
-                idPrefix='modal_cemetery'
-                style={{ aspectRatio: 'auto' }}
+            <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+              {effectSelection.constraint.min === effectSelection.constraint.max
+                ? `${effectSelection.constraint.max}枚選択してください`
+                : `最大${effectSelection.constraint.max}枚まで選択できます`}
+              （現在: {selectedIds.length}枚）
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  effectSelection.onConfirm(selectedIds);
+                  setSelectedIds([]);
+                }}
+                disabled={
+                  selectedIds.length < effectSelection.constraint.min ||
+                  selectedIds.length > effectSelection.constraint.max
+                }
+                style={{
+                  padding: '6px 14px',
+                  backgroundColor: '#6366f1',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                }}
               >
-                <button
-                  key={index}
-                  onClick={() => handleEquip(index)}
-                  disabled={selectedIds.length !== 1}
-                  style={{
-                    padding: '6px 12px',
-                    cursor:
-                      selectedIds.length === 1 ? 'pointer' : 'not-allowed',
-                  }}
-                >
-                  モンスター{index + 1}に装備
-                </button>
-              </DroppableSlot>
-            ))}
+                {effectSelection.actionLabel}
+              </button>
+              <button
+                onClick={() => {
+                  effectSelection.onCancel();
+                  setSelectedIds([]);
+                }}
+                style={{ padding: '6px 14px', cursor: 'pointer' }}
+              >
+                キャンセル
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              padding: '8px',
+              backgroundColor: '#f8f9fa',
+              borderRadius: '4px',
+              marginTop: '16px',
+            }}
+          >
+            <div style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
+              選択中のカード: {selectedIds.length}枚
+            </div>
+
+            {/* 【修正】タブごとに出し分けていた3つのボタンを汎用セレクターに置き換え */}
+            <MoveDestinationSelector
+              currentSide={side}
+              currentZone={activeTab}
+              selectedCount={selectedIds.length}
+              onExecute={(targetSide, targetZone) => {
+                onMoveCards({
+                  sourceSide: side,
+                  targetSide,
+                  cardIds: selectedIds,
+                  sourceZone: activeTab,
+                  targetZone,
+                });
+                setSelectedIds([]);
+              }}
+            />
+
+            <div
+              style={{
+                display: 'flex',
+                gap: '8px',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+              }}
+            >
+              <span
+                style={{
+                  borderLeft: '1px solid #ccc',
+                  margin: '0 4px',
+                  height: '24px',
+                }}
+              ></span>
+
+              {[0, 1, 2].map((index) => (
+                <DroppableSlot
+                  key={index}
+                  side={side}
+                  monsterIndex={index}
+                  slotIndex={0}
+                  slotName=''
+                  idPrefix='modal_cemetery'
+                  style={{ aspectRatio: 'auto' }}
+                >
+                  <button
+                    key={index}
+                    onClick={() => handleEquip(index)}
+                    disabled={selectedIds.length !== 1}
+                    style={{
+                      padding: '6px 12px',
+                      cursor:
+                        selectedIds.length === 1 ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    モンスター{index + 1}に装備
+                  </button>
+                </DroppableSlot>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

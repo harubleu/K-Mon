@@ -4,6 +4,7 @@ import {
   MONSTER_MASTER_LIST,
   type MonsterMasterDefinition,
 } from '../data/masterData';
+import { MONSTER_EFFECTS } from '../data/monsterEffects';
 import type { ManaCard, MonsterCard, PresetDeck } from '../types';
 
 export const useDeckBuilder = () => {
@@ -101,6 +102,7 @@ export const useDeckBuilder = () => {
   } => {
     const monsters: MonsterCard[] = recipe.monsterIds.map((id) => {
       const master = MONSTER_MASTER_LIST.find((m) => m.id === id)!;
+      const effectData = MONSTER_EFFECTS[master.id]; // 追加
       return {
         id: `${master.id}_${Date.now()}`,
         name: master.name,
@@ -110,6 +112,8 @@ export const useDeckBuilder = () => {
         isFlipped: false,
         imageUrl: master.imageUrl,
         flippedImageUrl: master.flippedImageUrl,
+        effect: effectData?.effect, // 追加
+        passiveEffect: effectData?.passiveEffect, // 追加
       };
     });
 

@@ -1,5 +1,7 @@
 // src/data/masterData.ts
 
+import type { MonsterEffect, PassiveEffect } from '../types';
+
 // マナカードのマスターデータ構造
 export interface ManaMasterDefinition {
   kanji: string;
@@ -55,10 +57,14 @@ export interface MonsterMasterDefinition {
   id: string;
   folder: string;
   name: string;
-  slots: string[]; // 必要なマナの漢字（部首）の配列
-  slotPositions?: string[]; // スロットの位置を示すCSSクラス名の配列
+  slots: string[];
+  slotPositions?: string[];
   imageUrl: string;
   flippedImageUrl?: string;
+  // 【追加】フェーズ5用。両方ともオプショナルなので、未設定のモンスターは
+  // これまで通り手動操作のみで扱われる（段階的に効果データを投入していける設計）
+  effect?: MonsterEffect;
+  passiveEffect?: PassiveEffect | PassiveEffect[];
 }
 
 // モンスターのマスターデータリスト
@@ -101,7 +107,7 @@ export const MONSTER_MASTER_LIST: MonsterMasterDefinition[] = [
     slots: ['歹', '戈', '戈'],
     slotPositions: [
       '.slot-left-middle',
-      '.slot-right-lower',
+      '.slot-right-upper',
       '.slot-right-lower',
     ],
     imageUrl: '/images/monsters/01_kihon/01_04_zan_front.png',

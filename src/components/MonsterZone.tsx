@@ -17,6 +17,8 @@ interface MonsterZoneProps {
     destination: 'cemetery' | 'exile',
   ) => void;
   onFlipMonster: (side: PlayerSide, monsterIndex: number) => void;
+  onActivateEffect: (side: PlayerSide, monsterIndex: number) => boolean;
+  canActivateEffect: (side: PlayerSide, monsterIndex: number) => boolean;
 }
 
 export const MonsterZone: React.FC<MonsterZoneProps> = ({
@@ -27,6 +29,8 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
   onToggleSelectMana,
   onTrashMana,
   onFlipMonster,
+  onActivateEffect,
+  canActivateEffect,
 }) => {
   return (
     <div
@@ -87,6 +91,18 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
               style={{ fontSize: '0.7rem', padding: '4px', cursor: 'pointer' }}
             >
               全マナ破棄(墓地)
+            </button>
+
+            {/* 【追加】フェーズ5: 発動トリガーUI。effectを持たない、または選択待ち中/未対応の場合は無効化 */}
+            <button
+              onClick={() => onActivateEffect(side, index)}
+              disabled={!monster.effect || !canActivateEffect(side, index)}
+              style={{ fontSize: '0.7rem', padding: '4px', cursor: 'pointer' }}
+              title={
+                !monster.effect ? '効果を持たないモンスターです' : undefined
+              }
+            >
+              効果発動
             </button>
           </div>
         </div>
