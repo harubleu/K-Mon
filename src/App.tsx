@@ -31,6 +31,7 @@ import { MixedZoneTrashPickerModal } from './components/GameBoard/MixedZoneTrash
 import { MonsterSelectModal } from './components/GameBoard/MonsterSelectModal';
 import { NumberPickerModal } from './components/GameBoard/NumberPickerModal';
 import { ChoiceOfEffectsModal } from './components/GameBoard/ChoiceOfEffectsModal';
+import { getActivatableEffect } from './utils/effectExecutor';
 
 export const App: React.FC = () => {
   const playerBuilder = useDeckBuilder();
@@ -119,24 +120,28 @@ export const App: React.FC = () => {
       onCancel: cancelSelection,
     };
   })();
-  // 【追加】発動ボタンから呼ばれる入口。monsterのeffectを引いて実行する。
+
+  // 【更新】発動ボタンから呼ばれる入口。monster.effectとpassiveEffect.own_turn_start.actionの
+  // どちらを対象にすべきかをgetActivatableEffectが判定する(own_turn_startパイプライン)。
   const handleActivateEffect = (
     side: PlayerSide,
     monsterIndex: number,
   ): boolean => {
     const monster = gameState[side].monsters[monsterIndex];
-    if (!monster.effect) return false;
-    return executeMonsterEffect(monster.effect, side, monsterIndex);
+    const effect = getActivatableEffect(monster, side, gameState);
+    if (!effect) return false;
+    return executeMonsterEffect(effect, side, monsterIndex);
   };
 
-  // 【追加】発動ボタンの活性/非活性判定用
+  // 【更新】発動ボタンの活性/非活性判定用。上記と同じ判定ロジックを使う
   const canActivateEffect = (
     side: PlayerSide,
     monsterIndex: number,
   ): boolean => {
     const monster = gameState[side].monsters[monsterIndex];
-    if (!monster.effect) return false;
-    return isEffectSupported(monster.effect, side, monsterIndex);
+    const effect = getActivatableEffect(monster, side, gameState);
+    if (!effect) return false;
+    return isEffectSupported(effect, side, monsterIndex);
   };
 
   const handleJankenComplete = (firstPlayer?: PlayerSide) => {
@@ -538,6 +543,19 @@ export const App: React.FC = () => {
     };
   })();
 
+  // 【追加】言・信・競・招・右・哲(janken_conditional_reduce)用
+  const jankenSelectionProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'janken_select') return null;
+    const req = pendingSelection.requirement;
+    return {
+      restrictOpponentHands: req.restrictOpponentHands,
+      resolveTieAsOutcome: req.resolveTieAsOutcome,
+      onBattleResult: (outcome: 'win' | 'tie' | 'lose') =>
+        confirmSelection({ kind: 'janken_select', outcome }),
+    };
+  })();
+
   // 【追加】どちら側のPlayerZoneにDeckModalを開かせるべきか
   const pendingSelectionSide =
     pendingSelection &&
@@ -653,12 +671,16 @@ export const App: React.FC = () => {
             </h1>
           </header>
 
-          {/* じゃんけんモーダル */}
+          {/* じゃんけんモーダル。jankenSelectionProps(効果解決由来)が存在する間は
+              強制的に開き、purposeも'battle'に固定する */}
           <JankenModal
-            isOpen={isJankenModalOpen}
-            purpose={jankenPurpose}
+            isOpen={!!jankenSelectionProps || isJankenModalOpen}
+            purpose={jankenSelectionProps ? 'battle' : jankenPurpose}
+            restrictOpponentHands={jankenSelectionProps?.restrictOpponentHands}
+            resolveTieAsOutcome={jankenSelectionProps?.resolveTieAsOutcome}
+            onBattleResult={jankenSelectionProps?.onBattleResult}
             onComplete={handleJankenComplete}
-            onClose={handleJankenClose}
+            onClose={jankenSelectionProps ? cancelSelection : handleJankenClose}
           />
 
           {/* 【追加】漢字種類選択モーダル(械・泣用。特定の山札に紐付かないためsideのルーティング不要) */}

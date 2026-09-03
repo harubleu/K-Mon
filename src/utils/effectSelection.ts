@@ -1,6 +1,6 @@
 // src/utils/effectSelection.ts
 //
-// フェーズ5: 「選択が必要な効果」をDeckModalの対話フローへ橋渡しする層。
+// フェーズ5: 「選択が必要な効果」をDeckModal等の対話フローへ橋渡しする層。
 // resolveMonsterEffect（effectExecutor.ts）がnullを返した効果に対してのみ呼び出される想定。
 //
 // - describeSelectionRequirement: 「何を聞くべきか」を判定する（純粋関数）
@@ -15,7 +15,12 @@ import type {
   PlayerSide,
 } from '../types';
 import type { ExecutorContext } from './effectExecutor';
-import { resolveSide, getOpponentSide, getPlayerState } from './effectExecutor';
+import {
+  resolveSide,
+  getOpponentSide,
+  getPlayerState,
+  resolveRevealCheckActions,
+} from './effectExecutor';
 
 // --- DeckModalに「カードを選ばせる」ケース ---
 export interface DeckSelectRequirement {
@@ -52,7 +57,7 @@ export interface DeckKanjiRevealSelectRequirement {
 // --- CemeteryAndExileModalに「墓地のカードを選ばせる」ケース ---
 export interface GraveyardSelectRequirement {
   kind: 'graveyard_select';
-  side: PlayerSide; // 常に自分の墓地(graveyard_select_recover/equipは共にRelativeSideを持たず自分固定)
+  side: PlayerSide; // graveyard_select_recover/equipは自分固定。deck_compare_branchは動的に決まる
   constraint: { min: number; max: number };
   kanjiFilter?: string[]; // 未指定なら墓地の全カードが選択可能
   actionLabel: string;
@@ -92,6 +97,13 @@ export interface ChoiceOfEffectsSelectRequirement {
   options: string[]; // ラベルのみ。選ばれた後の解決はuseEffectExecutor側で再帰的に行う
 }
 
+// --- 【追加】言・信・競・招・右・哲: じゃんけんで決着させるケース ---
+export interface JankenSelectRequirement {
+  kind: 'janken_select';
+  restrictOpponentHands?: ('rock' | 'scissors' | 'paper')[]; // 哲: 相手はチョキ・パーのみ
+  resolveTieAsOutcome: boolean; // true = あいこも決着として扱う(tieCount定義済み。現状は哲のみ)
+}
+
 export type SelectionRequirement =
   | DeckSelectRequirement
   | DeckReorderRequirement
@@ -102,11 +114,12 @@ export type SelectionRequirement =
   | MixedZoneTrashSelectRequirement
   | MonsterSelectRequirement
   | NumberSelectRequirement
-  | ChoiceOfEffectsSelectRequirement;
+  | ChoiceOfEffectsSelectRequirement
+  | JankenSelectRequirement;
 
 /**
- * resolveMonsterEffectがnullを返した効果に対して、DeckModalへの誘導が可能か判定する。
- * 対応するUIがまだ無い（または本来DeckModal以外のUIが必要な）効果はnullを返す。
+ * resolveMonsterEffectがnullを返した効果に対して、既存UIへの誘導が可能か判定する。
+ * 対応するUIがまだ無い効果はnullを返す。
  */
 export function describeSelectionRequirement(
   effect: MonsterEffect,
@@ -257,6 +270,57 @@ export function describeSelectionRequirement(
         options: effect.options.map((o) => o.label),
       };
 
+    // ============ 【追加】じゃんけん系(言・信・競・招・右・哲) ============
+    // 詩(m00041)はpassiveEffect.own_turn_start内にネストされておりmonster.effectを見る
+    // 発動トリガーUIの対象外(然と同じ問題)。own_turn_startパイプライン実装まで対応不可。
+    case 'janken_conditional_reduce':
+      return {
+        kind: 'janken_select',
+        restrictOpponentHands: effect.restrictOpponentHands,
+        resolveTieAsOutcome: effect.tieCount !== undefined,
+      };
+
+    // ============ 【追加】予想系: KanjiTypePickerModal流用(告・呪・推・竜・善・名) ============
+    case 'deck_predict_reveal_reduce':
+      return { kind: 'kanji_type_select', kanjiCount: 1 };
+
+    // ============ 【追加】誓のみ(targetKanji未指定)。煉・初・朝はresolveMonsterEffectで自動解決済み ============
+    case 'deck_reveal_kanji_check': {
+      if (effect.targetKanji !== undefined) return null;
+      return { kind: 'kanji_type_select', kanjiCount: 1 };
+    }
+
+    // ============ 【追加】出: 少ない方を動的に判定し、graveyard_select_recoverへ委譲 ============
+    case 'deck_compare_branch': {
+      // 実データでは常にgraveyard_select_recover(数値固定count)の形のみ確認済み
+      if (effect.fewerSideEffect.effectId !== 'graveyard_select_recover')
+        return null;
+      const inner = effect.fewerSideEffect;
+      if (inner.count === 'all') return null; // 理論上到達しない
+
+      const selfDeck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+      const oppDeck = getPlayerState(
+        ctx.gameState,
+        getOpponentSide(ctx.ownerSide),
+      ).deck;
+      // 同数(案B: 両者とも回復)は「選択の連鎖」アーキテクチャが必要(進・得・識・生・方と同じ課題)。
+      // design_document.md 7.6章15番・7.8章3番の作業とあわせて対応する。現状は未対応としてnullを返す
+      // (盤面が同数の間だけ発動ボタンがdisabledになる、既存のdeck_normalize_to_count等と同じ挙動)。
+      if (selfDeck.length === oppDeck.length) return null;
+
+      const fewerSide =
+        selfDeck.length < oppDeck.length
+          ? ctx.ownerSide
+          : getOpponentSide(ctx.ownerSide);
+
+      return {
+        kind: 'graveyard_select',
+        side: fewerSide,
+        constraint: { min: inner.count, max: inner.count },
+        actionLabel: '選択したカードを山札に戻す',
+      };
+    }
+
     // ============ 見送り: 現状該当カードが'both'/'choose'のみのため（3章参照） ============
     // 型としてはDeckReorderRequirement.scope: {partialTopCount}を既に用意してあるため、
     // self/opponent固定のカードが増えた際はdeck_full_reorderと同様の実装で対応可能
@@ -265,15 +329,6 @@ export function describeSelectionRequirement(
 
     // ============ 見送り: 複数ゾーンにまたがるため、単一DeckModalでは表現しきれない ============
     case 'select_zone_move_one':
-      return null;
-
-    // ============ 見送り: DeckModal対象外(予想・じゃんけん系、JankenModal連携で別途設計) ============
-    case 'janken_conditional_reduce':
-    case 'deck_compare_reduce':
-    case 'deck_compare_branch':
-    case 'deck_predict_reveal_reduce':
-    case 'deck_reveal_kanji_check': // 前回の確認通り「予想」が本質のためDeckModal対象外
-    case 'deck_iterative_reveal_until_condition': // 同上
       return null;
 
     // ============ 見送り: 外部勝敗システム接続待ち(design_document.md 7.6章2番) ============
@@ -292,6 +347,8 @@ export function describeSelectionRequirement(
     case 'graveyard_kanji_count_threshold':
     case 'graveyard_kanji_count_linear':
     case 'deck_keep_rest_trash':
+    case 'deck_compare_reduce':
+    case 'deck_iterative_reveal_until_condition':
     case 'monster_remove_from_game':
     case 'draw_and_play_n':
     case 'swap_deck_and_graveyard':
@@ -346,13 +403,16 @@ export type EffectSelectionAnswer =
       graveyardCardId: string;
     }
   | { kind: 'mixed_zone_trash_select'; selectedCardIds: string[] }
-  | { kind: 'mixed_zone_trash_select'; selectedCardIds: string[] }
   | { kind: 'monster_select'; selectedMonsterIndexes: number[] }
   | { kind: 'number_select'; selectedNumber: number }
   // 【訂正】buildActionsFromSelection内では未使用(useEffectExecutor.ts側で
   // choice_of_effectsのケースとして先に横取りされるため到達しない)だが、
   // confirmSelectionの引数型としては必要なため、EffectSelectionAnswer自体には含める。
-  | { kind: 'choice_of_effects_select'; selectedIndex: number };
+  | { kind: 'choice_of_effects_select'; selectedIndex: number }
+  // 【追加】じゃんけんの決着結果。JankenModal内部でランダムに決着し、その結果のみを返す
+  // (「何を選んだか」ではなく「どう決着したか」を返す点が他のkindと異なる)。
+  | { kind: 'janken_select'; outcome: 'win' | 'tie' | 'lose' };
+
 /**
  * describeSelectionRequirementで示した内容に対する回答(answer)を受けて、
  * 最終的なGameAction[]を組み立てる。回答の形式が効果と噛み合わない場合や、
@@ -695,6 +755,117 @@ export function buildActionsFromSelection(
             targetZone: 'cemetery',
           },
         });
+      }
+      return actions;
+    }
+
+    // 【追加】言・信・競・招・右・哲: じゃんけんの決着結果に応じて対象・枚数を算出する。
+    // 哲の原文「かち▷あいて／あいこ▷あいて／まけ▷じぶん」で確認した対応関係に基づく。
+    case 'janken_conditional_reduce': {
+      if (answer.kind !== 'janken_select') return null;
+      let targetSide: PlayerSide;
+      let count: number;
+      if (answer.outcome === 'win') {
+        targetSide = getOpponentSide(ctx.ownerSide);
+        count = effect.winCount ?? 0;
+      } else if (answer.outcome === 'tie') {
+        targetSide = getOpponentSide(ctx.ownerSide);
+        count = effect.tieCount ?? 0;
+      } else {
+        targetSide = ctx.ownerSide;
+        count = effect.loseCount ?? 0;
+      }
+      if (count <= 0) return [];
+      const deck = getPlayerState(ctx.gameState, targetSide).deck;
+      const cardIds = deck.slice(0, count).map((c) => c.id);
+      if (cardIds.length === 0) return [];
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: targetSide,
+            targetSide: targetSide,
+            cardIds,
+            sourceZone: 'deck',
+            targetZone: 'cemetery',
+          },
+        },
+      ];
+    }
+
+    // 【追加】告・呪・推・竜・善・名: 宣言した漢字と、公開したrevealCount枚が一致するかで分岐
+    case 'deck_predict_reveal_reduce': {
+      if (answer.kind !== 'kanji_type_select') return null;
+      const declaredKanji = answer.selectedKanji[0];
+      if (!declaredKanji) return [];
+      const revealSide = resolveSide(effect.predictSide, ctx.ownerSide);
+      return resolveRevealCheckActions(
+        ctx.gameState,
+        ctx.ownerSide,
+        revealSide,
+        effect.revealCount ?? 1,
+        (card) => card.kanji === declaredKanji,
+        effect.onHit,
+        effect.onMiss,
+      );
+    }
+
+    // 【追加】誓のみ到達(targetKanji未指定分)。煉・初・朝はresolveMonsterEffectで既に自動解決済み
+    case 'deck_reveal_kanji_check': {
+      if (answer.kind !== 'kanji_type_select') return null;
+      const declaredKanji = answer.selectedKanji[0];
+      if (!declaredKanji) return [];
+      return resolveRevealCheckActions(
+        ctx.gameState,
+        ctx.ownerSide,
+        ctx.ownerSide, // 自分の山札固定
+        effect.revealCount,
+        (card) => card.kanji === declaredKanji,
+        effect.onMatch,
+        effect.onMiss,
+      );
+    }
+
+    // 【追加】出: describeSelectionRequirement側で既に「少ない方」を判定しGraveyardSelectRequirement.side
+    // に格納しているため、ここでは改めて比較し直し、確定時点の最新盤面で side を再計算する
+    // (選択待ちの間に盤面が変化していても、最新状態を基準にするため。1.3章の設計方針に準拠)。
+    case 'deck_compare_branch': {
+      if (answer.kind !== 'graveyard_select') return null;
+      if (effect.fewerSideEffect.effectId !== 'graveyard_select_recover')
+        return null;
+
+      const selfDeck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+      const oppDeck = getPlayerState(
+        ctx.gameState,
+        getOpponentSide(ctx.ownerSide),
+      ).deck;
+      if (selfDeck.length === oppDeck.length) return null; // 同数(案B)は現状未対応
+
+      const fewerSide =
+        selfDeck.length < oppDeck.length
+          ? ctx.ownerSide
+          : getOpponentSide(ctx.ownerSide);
+      const placement = effect.fewerSideEffect.placement;
+
+      const actions: GameAction[] = [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: fewerSide,
+            targetSide: fewerSide,
+            cardIds: answer.selectedCardIds,
+            sourceZone: 'cemetery',
+            targetZone: 'deck',
+          },
+        },
+      ];
+      if (placement === 'top') {
+        actions.push({
+          type: 'REORDER_DECK',
+          payload: { side: fewerSide, orderedCardIds: answer.selectedCardIds },
+        });
+      } else {
+        actions.push({ type: 'SHUFFLE_DECK', payload: { side: fewerSide } });
       }
       return actions;
     }

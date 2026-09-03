@@ -1,16 +1,28 @@
 // src/components/GameBoard/JankenModal.tsx
+//
+// 【フェーズ5後半で拡張】従来の'start'(先攻後攻決定)・'battle'(手動汎用ツール)に加え、
+// じゃんけん系モンスター効果(言・信・競・招・右・哲)の決着UIとしても流用する。
+// - あいこの扱い: resolveTieAsOutcomeがtrue(=tieCountが定義された効果。現状は哲のみ)の場合、
+//   あいこも決着として扱いonBattleResultで通知する。false/未指定なら従来通り再戦。
+// - restrictOpponentHands: 哲(あいてはチョキ・パーのみ)のように、CPU側の手を制限する効果に対応。
+// - onBattleResult: 決着結果(win/tie/lose)を呼び出し元(効果解決)へ通知する。
 
 import React, { useState } from 'react';
 import type { PlayerSide } from '../../types';
 
+type Hand = 'rock' | 'scissors' | 'paper';
+type Outcome = 'win' | 'tie' | 'lose';
+
 interface JankenModalProps {
   isOpen: boolean;
-  purpose: 'start' | 'battle'; // 追加: 'start' = 先攻後攻決定用, 'battle' = 効果処理用
-  onComplete: (firstPlayer?: PlayerSide) => void; // 任意パラメータに変更
-  onClose: () => void; // 追加: バトル用閉じる処理
+  purpose: 'start' | 'battle';
+  onComplete: (firstPlayer?: PlayerSide) => void;
+  onClose: () => void;
+  // 【追加】効果解決連携用(未指定なら従来通りのフリーツール動作)
+  restrictOpponentHands?: Hand[];
+  resolveTieAsOutcome?: boolean;
+  onBattleResult?: (outcome: Outcome) => void;
 }
-
-type Hand = 'rock' | 'scissors' | 'paper';
 
 const HAND_LABELS: Record<Hand, string> = {
   rock: 'グー ✊',
@@ -18,56 +30,83 @@ const HAND_LABELS: Record<Hand, string> = {
   paper: 'パー ✋',
 };
 
+const ALL_HANDS: Hand[] = ['rock', 'scissors', 'paper'];
+
 export const JankenModal: React.FC<JankenModalProps> = ({
   isOpen,
   purpose,
   onComplete,
   onClose,
+  restrictOpponentHands,
+  resolveTieAsOutcome = false,
+  onBattleResult,
 }) => {
   const [playerHand, setPlayerHand] = useState<Hand | null>(null);
   const [cpuHand, setCpuHand] = useState<Hand | null>(null);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
-  const [isWinner, setIsWinner] = useState<boolean | null>(null);
+  // 【変更】isWinner(boolean|null) → outcome(tri-state)。tieが独立した決着になり得るため。
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
 
-  // 追加: モーダルが開かれるたびに状態をリセットする処理
   React.useEffect(() => {
     if (isOpen) {
       setPlayerHand(null);
       setCpuHand(null);
       setResultMessage(null);
-      setIsWinner(null);
+      setOutcome(null);
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
+  // battle目的かつ「tieCountが定義された効果」の場合のみ、あいこを決着として扱う。
+  // start目的(先攻後攻決定)は常に再戦(コイントスの性質上、あいこに意味を持たせる必要がないため)。
+  const tieIsDecisive = purpose === 'battle' && resolveTieAsOutcome;
+
   const handleJanken = (hand: Hand) => {
-    const hands: Hand[] = ['rock', 'scissors', 'paper'];
-    const randomCpuHand = hands[Math.floor(Math.random() * hands.length)];
+    const pool =
+      restrictOpponentHands && restrictOpponentHands.length > 0
+        ? restrictOpponentHands
+        : ALL_HANDS;
+    const randomCpuHand = pool[Math.floor(Math.random() * pool.length)];
     setPlayerHand(hand);
     setCpuHand(randomCpuHand);
 
+    let result: Outcome;
     if (hand === randomCpuHand) {
-      setResultMessage('あいこです！もう一度手を選んでください。');
-      setIsWinner(null);
+      result = 'tie';
     } else if (
       (hand === 'rock' && randomCpuHand === 'scissors') ||
       (hand === 'scissors' && randomCpuHand === 'paper') ||
       (hand === 'paper' && randomCpuHand === 'rock')
     ) {
+      result = 'win';
+    } else {
+      result = 'lose';
+    }
+
+    if (result === 'tie' && !tieIsDecisive) {
+      // あいこ＝再戦(決着していない状態に戻す)
+      setResultMessage('あいこです！もう一度手を選んでください。');
+      setOutcome(null);
+      return;
+    }
+
+    setOutcome(result);
+    if (result === 'win') {
       setResultMessage(
         purpose === 'start'
           ? '勝利！先攻・後攻を選択してください。'
           : 'じゃんけんに勝利しました！',
       );
-      setIsWinner(true);
-    } else {
+    } else if (result === 'lose') {
       setResultMessage(
         purpose === 'start'
           ? '敗北... 相手（CP）が先攻になります。'
           : 'じゃんけんに敗北しました...',
       );
-      setIsWinner(false);
+    } else {
+      // tie かつ 決着扱い(battle purposeでresolveTieAsOutcome時のみ到達)
+      setResultMessage('あいこでした。');
     }
   };
 
@@ -79,6 +118,11 @@ export const JankenModal: React.FC<JankenModalProps> = ({
     } else {
       onComplete(side);
     }
+  };
+
+  const handleConfirmBattleResult = () => {
+    if (outcome) onBattleResult?.(outcome);
+    onClose();
   };
 
   return (
@@ -120,7 +164,7 @@ export const JankenModal: React.FC<JankenModalProps> = ({
             borderRadius: '8px',
           }}
         >
-          {isWinner === null && (
+          {outcome === null && (
             <div>
               <p style={{ fontSize: '0.9rem', color: '#666' }}>
                 手を選択してください
@@ -133,7 +177,7 @@ export const JankenModal: React.FC<JankenModalProps> = ({
                   marginTop: '12px',
                 }}
               >
-                {(['rock', 'scissors', 'paper'] as Hand[]).map((hand) => (
+                {ALL_HANDS.map((hand) => (
                   <button
                     key={hand}
                     onClick={() => handleJanken(hand)}
@@ -163,9 +207,9 @@ export const JankenModal: React.FC<JankenModalProps> = ({
               <p
                 style={{
                   color:
-                    isWinner === true
+                    outcome === 'win'
                       ? '#2e7d32'
-                      : isWinner === false
+                      : outcome === 'lose'
                         ? '#c62828'
                         : '#e65100',
                   fontWeight: 'bold',
@@ -177,7 +221,7 @@ export const JankenModal: React.FC<JankenModalProps> = ({
           )}
 
           {/* purpose === 'start' の場合のみ先攻後攻の選択ボタンを表示 */}
-          {purpose === 'start' && isWinner === true && (
+          {purpose === 'start' && outcome === 'win' && (
             <div
               style={{
                 display: 'flex',
@@ -214,7 +258,7 @@ export const JankenModal: React.FC<JankenModalProps> = ({
               </button>
             </div>
           )}
-          {purpose === 'start' && isWinner === false && (
+          {purpose === 'start' && outcome === 'lose' && (
             <button
               onClick={() => onComplete('opponent')}
               style={{
@@ -231,23 +275,29 @@ export const JankenModal: React.FC<JankenModalProps> = ({
             </button>
           )}
 
-          {/* purpose === 'battle' の場合は結果確認用の閉じるボタンを表示 */}
-          {purpose === 'battle' && resultMessage && (
-            <button
-              onClick={onClose}
-              style={{
-                padding: '8px 16px',
-                marginTop: '16px',
-                backgroundColor: '#1976d2',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '6px',
-                cursor: 'pointer',
-              }}
-            >
-              確認して閉じる
-            </button>
-          )}
+          {/* purpose === 'battle' の場合、決着済み(win/lose、またはtieが決着扱い)の時のみ確認ボタンを表示。
+              【修正】従来は resultMessage の有無だけで判定しており、あいこ＝再戦待ちの状態でも
+              このボタンが同時に表示されてしまっていた(効果解決に転用すると未決着のまま確定できてしまう
+              事故につながるバグだったため、outcomeが決着値を持つ場合のみに修正)。 */}
+          {purpose === 'battle' &&
+            (outcome === 'win' ||
+              outcome === 'lose' ||
+              (outcome === 'tie' && tieIsDecisive)) && (
+              <button
+                onClick={handleConfirmBattleResult}
+                style={{
+                  padding: '8px 16px',
+                  marginTop: '16px',
+                  backgroundColor: '#1976d2',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                確認して閉じる
+              </button>
+            )}
         </div>
 
         {/* ダイレクト選択エリアは 'start' の時のみ表示 */}

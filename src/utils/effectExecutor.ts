@@ -11,7 +11,10 @@
 import type {
   GameState,
   GameAction,
+  ManaCard,
+  MonsterCard,
   MonsterEffect,
+  PassiveEffect,
   PlayerSide,
   RelativeSide,
   PlayerState,
@@ -59,6 +62,107 @@ function countGraveyardKanji(
   const cemetery = getPlayerState(gameState, side).cemetery;
   if (targetKanji === 'all') return cemetery.length;
   return cemetery.filter((c) => targetKanji.includes(c.kanji)).length;
+}
+
+// 【追加・フェーズ5後半】「山札からrevealCount枚公開して墓地へ送り、公開カードが判定条件に
+// 一致するか(isMatch)で当落を分岐する」という共通パターンを切り出したヘルパー。
+// 告・呪・推・竜・善・名（deck_predict_reveal_reduce）・誓・煉・初・朝（deck_reveal_kanji_check）
+// の4effectId×計10件で共有する。
+//
+// 【設計注記】revealSideとonMatch/onMissのtargetSideが同じ山札を指す場合（例: 呪）、
+// 公開分（先頭revealCount枚）は既に別アクションで墓地へ送られる前提のため、当落側の
+// カード選定は「公開分を除いた続き」から取る(startIndexで調整)。MOVE_CARD_BETWEEN_ZONES は
+// dispatch時点のstateからID一致で対象を探すため、この事前計算のずれは実害を生まない
+// （既存のgraveyard_recover_then_deck_trash_matching_countと同じ考え方）。
+export function resolveRevealCheckActions(
+  gameState: GameState,
+  ownerSide: PlayerSide,
+  revealSide: PlayerSide,
+  revealCount: number,
+  isMatch: (card: ManaCard) => boolean,
+  onMatchOutcome:
+    | { targetSide: RelativeSide; count: number }
+    | null
+    | undefined,
+  onMissOutcome: { targetSide: RelativeSide; count: number } | null | undefined,
+): GameAction[] {
+  const deck = getPlayerState(gameState, revealSide).deck;
+  const revealedCards = deck.slice(0, revealCount);
+  const revealedIds = revealedCards.map((c) => c.id);
+
+  const actions: GameAction[] = [];
+  if (revealedIds.length > 0) {
+    actions.push({
+      type: 'MOVE_CARD_BETWEEN_ZONES',
+      payload: {
+        sourceSide: revealSide,
+        targetSide: revealSide,
+        cardIds: revealedIds,
+        sourceZone: 'deck',
+        targetZone: 'cemetery',
+      },
+    });
+  }
+
+  const hit = revealedCards.some(isMatch);
+  const outcome = hit ? onMatchOutcome : onMissOutcome;
+  if (outcome && outcome.count > 0) {
+    const outcomeSide = resolveSide(outcome.targetSide, ownerSide);
+    const outcomeDeck = getPlayerState(gameState, outcomeSide).deck;
+    const startIndex = outcomeSide === revealSide ? revealCount : 0;
+    const outcomeIds = outcomeDeck
+      .slice(startIndex, startIndex + outcome.count)
+      .map((c) => c.id);
+    if (outcomeIds.length > 0) {
+      actions.push({
+        type: 'MOVE_CARD_BETWEEN_ZONES',
+        payload: {
+          sourceSide: outcomeSide,
+          targetSide: outcomeSide,
+          cardIds: outcomeIds,
+          sourceZone: 'deck',
+          targetZone: 'cemetery',
+        },
+      });
+    }
+  }
+
+  return actions;
+}
+
+// 【追加・own_turn_startパイプライン】「効果発動」ボタンが実際にどのMonsterEffectを対象とすべきかを
+// 判定する。自分の(ownerSideが手番の)startフェーズ中は、passiveEffectのown_turn_startトリガーを
+// monster.effectより優先する。それ以外は従来通りmonster.effect。
+//
+// 【設計判断】現状データでは、同一モンスターがmonster.effectとown_turn_start型passiveEffectを
+// 同時に持つケースは0件（bash_toolで確認済み）。将来そのようなモンスターが追加された場合も、
+// このルールにより「自分のstartフェーズ中はown_turn_start側が優先される」という一貫した挙動になる。
+//
+// 【対応効果の広がり】歩・脈(deck_reduce_fixedのみ)を主眼に設計したが、詩(janken_conditional_reduce)も
+// このヘルパーだけで自動的に解決可能になる(janken系は本セッション前半で実装済みのため)。
+// 然(select_zone_move_one)はdescribeSelectionRequirement側で引き続きnullを返す設計のため、
+// このヘルパーがactionを返してもisEffectSupportedがfalseになりボタンはdisabledのまま
+// (専用UI設計まで安全にスコープ外を維持できる)。
+export function getActivatableEffect(
+  monster: MonsterCard,
+  ownerSide: PlayerSide,
+  gameState: GameState,
+): MonsterEffect | null {
+  const isOwnStartPhase =
+    gameState.currentPhase === 'start' && gameState.turnPlayer === ownerSide;
+
+  if (isOwnStartPhase && monster.passiveEffect) {
+    const passives = Array.isArray(monster.passiveEffect)
+      ? monster.passiveEffect
+      : [monster.passiveEffect];
+    const startTrigger = passives.find(
+      (p): p is Extract<PassiveEffect, { trigger: 'own_turn_start' }> =>
+        p.trigger === 'own_turn_start',
+    );
+    if (startTrigger) return startTrigger.action;
+  }
+
+  return monster.effect ?? null;
 }
 
 export interface ExecutorContext {
@@ -194,6 +298,119 @@ export function resolveMonsterEffect(
       ];
     }
 
+    // 【追加】比・合: 両者の山札枚数を比較し、多い方をcount枚減らす。同数はtieBehavior('both'のみ
+    // 現状定義)に従い両者とも減らす。選択要素が無いため完全自動解決の対象。
+    case 'deck_compare_reduce': {
+      const selfDeck = getPlayerState(gameState, ownerSide).deck;
+      const oppDeck = getPlayerState(gameState, opponentSide).deck;
+      const actions: GameAction[] = [];
+
+      if (selfDeck.length === oppDeck.length) {
+        const selfIds = selfDeck.slice(0, effect.count).map((c) => c.id);
+        const oppIds = oppDeck.slice(0, effect.count).map((c) => c.id);
+        if (selfIds.length > 0) {
+          actions.push({
+            type: 'MOVE_CARD_BETWEEN_ZONES',
+            payload: {
+              sourceSide: ownerSide,
+              targetSide: ownerSide,
+              cardIds: selfIds,
+              sourceZone: 'deck',
+              targetZone: 'cemetery',
+            },
+          });
+        }
+        if (oppIds.length > 0) {
+          actions.push({
+            type: 'MOVE_CARD_BETWEEN_ZONES',
+            payload: {
+              sourceSide: opponentSide,
+              targetSide: opponentSide,
+              cardIds: oppIds,
+              sourceZone: 'deck',
+              targetZone: 'cemetery',
+            },
+          });
+        }
+        return actions;
+      }
+
+      const largerSide =
+        selfDeck.length > oppDeck.length ? ownerSide : opponentSide;
+      const largerDeck = largerSide === ownerSide ? selfDeck : oppDeck;
+      const cardIds = largerDeck.slice(0, effect.count).map((c) => c.id);
+      if (cardIds.length === 0) return [];
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: largerSide,
+            targetSide: largerSide,
+            cardIds,
+            sourceZone: 'deck',
+            targetZone: 'cemetery',
+          },
+        },
+      ];
+    }
+
+    // 【追加】誓・煉・初・朝: targetKanjiが指定済み(煉・初・朝)の場合のみここで完全自動解決する。
+    // targetKanji未指定(誓)は発動時にプレイヤーが漢字を宣言する必要があるため、
+    // effectSelection.ts側(KanjiTypePickerModal流用)へ誘導するためnullを返す。
+    case 'deck_reveal_kanji_check': {
+      if (effect.targetKanji === undefined) return null;
+      const targetKanjiList = Array.isArray(effect.targetKanji)
+        ? effect.targetKanji
+        : [effect.targetKanji];
+      return resolveRevealCheckActions(
+        gameState,
+        ownerSide,
+        ownerSide, // 自分の山札固定（誓のカード原文で確認。型にside項目が無いのも同じ理由と推測）
+        effect.revealCount,
+        (card) => targetKanjiList.includes(card.kanji),
+        effect.onMatch,
+        effect.onMiss,
+      );
+    }
+
+    // 【追加】戒: 相手の山札を1枚ずつ墓地へ送り、既出の種類数がmaxDistinctKanjiに達するか、
+    // 累計枚数がmaxCountに達したら止める。山札の並び順は既知のため、プレイヤーの選択なしに
+    // 何枚・どのカードが対象になるか一意に確定できる。
+    case 'deck_iterative_reveal_until_condition': {
+      const targetSide = resolveSide(effect.targetSide, ownerSide);
+      const deck = getPlayerState(gameState, targetSide).deck;
+      const seenKanji = new Set<string>();
+      const movedIds: string[] = [];
+
+      for (const card of deck) {
+        movedIds.push(card.id);
+        seenKanji.add(card.kanji);
+
+        const hitDistinct =
+          effect.stopConditions.maxDistinctKanji !== undefined &&
+          seenKanji.size >= effect.stopConditions.maxDistinctKanji;
+        const hitCount =
+          effect.stopConditions.maxCount !== undefined &&
+          movedIds.length >= effect.stopConditions.maxCount;
+
+        if (hitDistinct || hitCount) break;
+      }
+
+      if (movedIds.length === 0) return [];
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: targetSide,
+            targetSide: targetSide,
+            cardIds: movedIds,
+            sourceZone: 'deck',
+            targetZone: effect.destination,
+          },
+        },
+      ];
+    }
+
     case 'sequence': {
       // 独立した複数ステップを順番に解決する。いずれか1ステップでも選択が必要（null）なら
       // sequence全体を未対応として返す。中途半端に一部だけ自動実行してしまうと、
@@ -278,15 +495,13 @@ export function resolveMonsterEffect(
     // 以下、選択・外部システム（勝敗判定）接続・複雑な副作用のいずれかが必要なため未対応（null）。
     // 対応が必要になった時点で、既存UI（DeckModal/JankenModal/MoveDestinationSelector）との
     // 連携方式を別途設計すること（design_document.md 7.8章参照）。
-    case 'janken_conditional_reduce':
+    case 'janken_conditional_reduce': // 【フェーズ5後半】JankenModal連携でeffectSelection.ts側にて対応済み
+    case 'deck_predict_reveal_reduce': // 同上（KanjiTypePickerModal流用でeffectSelection.ts側にて対応済み）
+    case 'deck_compare_branch': // 同上（少ない方の判定＋graveyard_select_recover委譲でeffectSelection.ts側にて対応済み）
     case 'graveyard_select_equip':
     case 'deck_select_equip':
     case 'deck_kanji_purge':
     case 'deck_full_reorder':
-    case 'deck_compare_reduce':
-    case 'deck_compare_branch':
-    case 'deck_predict_reveal_reduce':
-    case 'deck_reveal_kanji_check':
     case 'choose_number_reduce_both':
     case 'choose_number_reduce':
     case 'choice_of_effects':
@@ -299,7 +514,6 @@ export function resolveMonsterEffect(
     case 'graveyard_total_count_threshold_win':
     case 'mixed_zone_select_trash':
     case 'graveyard_recover_then_deck_trash_matching_count':
-    case 'deck_iterative_reveal_until_condition':
     case 'monster_remove_from_game':
     case 'draw_and_play_n':
     case 'deck_predict_full_composition_win':
