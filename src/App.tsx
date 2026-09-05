@@ -31,6 +31,8 @@ import { MixedZoneTrashPickerModal } from './components/GameBoard/MixedZoneTrash
 import { MonsterSelectModal } from './components/GameBoard/MonsterSelectModal';
 import { NumberPickerModal } from './components/GameBoard/NumberPickerModal';
 import { ChoiceOfEffectsModal } from './components/GameBoard/ChoiceOfEffectsModal';
+import { ZoneMoveSelectModal } from './components/GameBoard/ZoneMoveSelectModal';
+import type { ZoneMoveCandidate } from './components/GameBoard/ZoneMoveSelectModal';
 import { getActivatableEffect } from './utils/effectExecutor';
 
 export const App: React.FC = () => {
@@ -436,6 +438,7 @@ export const App: React.FC = () => {
     return {
       constraint: req.constraint,
       kanjiFilter: req.kanjiFilter,
+      cardIdFilter: req.cardIdFilter, // 【追加】方のsourceRestriction用
       actionLabel: req.actionLabel,
       onConfirm: (selectedCardIds: string[]) =>
         confirmSelection({ kind: 'graveyard_select', selectedCardIds }),
@@ -492,7 +495,9 @@ export const App: React.FC = () => {
     };
   })();
 
-  // 【追加】反用
+  // 【更新】反用＋生方のexcludeSelf(phase1)用。excludeMonsterIndexが指定されている場合、
+  // MonsterSelectModal側でそのindexだけ選択不可にする(配列自体は絞らない。絞るとindexが
+  // ずれてonConfirmのselectedMonsterIndexesが実際の配列と食い違うため)。
   const monsterSelectProps = (() => {
     if (!pendingSelection) return null;
     if (pendingSelection.requirement.kind !== 'monster_select') return null;
@@ -500,6 +505,7 @@ export const App: React.FC = () => {
     return {
       monsters: gameState[req.side].monsters,
       constraint: req.constraint,
+      excludeMonsterIndex: req.excludeMonsterIndex,
       onConfirm: (selectedMonsterIndexes: number[]) =>
         confirmSelection({ kind: 'monster_select', selectedMonsterIndexes }),
       onCancel: cancelSelection,
@@ -554,6 +560,37 @@ export const App: React.FC = () => {
       onBattleResult: (outcome: 'win' | 'tie' | 'lose') =>
         confirmSelection({ kind: 'janken_select', outcome }),
     };
+  })();
+
+  // 【追加】然(select_zone_move_one)用。山札1番上＋墓地の合算候補を、確定時点ではなく
+  // 表示時点のgameStateから毎回組み立てる(表示中に盤面が変わる可能性は低いが、
+  // 念のためbuildActionsFromSelection側でも改めて最新状態から再判定している。1.3章参照)。
+  const zoneMoveSelectionProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'zone_move_select') return null;
+    const req = pendingSelection.requirement;
+    const playerState = gameState[req.side];
+    const candidates: ZoneMoveCandidate[] = [];
+    if (req.sourceOptions.includes('deck_top') && playerState.deck.length > 0) {
+      const top = playerState.deck[0];
+      candidates.push({
+        cardId: top.id,
+        kanji: top.kanji,
+        reading: top.reading,
+        sourceZone: 'deck',
+      });
+    }
+    if (req.sourceOptions.includes('graveyard')) {
+      playerState.cemetery.forEach((c) =>
+        candidates.push({
+          cardId: c.id,
+          kanji: c.kanji,
+          reading: c.reading,
+          sourceZone: 'cemetery',
+        }),
+      );
+    }
+    return { candidates };
   })();
 
   // 【追加】どちら側のPlayerZoneにDeckModalを開かせるべきか
@@ -717,6 +754,7 @@ export const App: React.FC = () => {
             isOpen={!!monsterSelectProps}
             monsters={monsterSelectProps?.monsters ?? []}
             constraint={monsterSelectProps?.constraint ?? { min: 0, max: 0 }}
+            excludeMonsterIndex={monsterSelectProps?.excludeMonsterIndex}
             onConfirm={monsterSelectProps?.onConfirm ?? (() => {})}
             onCancel={monsterSelectProps?.onCancel ?? (() => {})}
           />
@@ -736,6 +774,15 @@ export const App: React.FC = () => {
             options={choiceOfEffectsProps?.options ?? []}
             onConfirm={choiceOfEffectsProps?.onConfirm ?? (() => {})}
             onCancel={choiceOfEffectsProps?.onCancel ?? (() => {})}
+          />
+
+          <ZoneMoveSelectModal
+            isOpen={!!zoneMoveSelectionProps}
+            candidates={zoneMoveSelectionProps?.candidates ?? []}
+            onConfirm={(selectedCardId) =>
+              confirmSelection({ kind: 'zone_move_select', selectedCardId })
+            }
+            onCancel={cancelSelection}
           />
 
           {/* [上段] Opponent (相手) エリア */}

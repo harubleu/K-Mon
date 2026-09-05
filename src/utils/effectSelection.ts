@@ -13,6 +13,7 @@ import type {
   GameState,
   MonsterEffect,
   PlayerSide,
+  ZoneType,
 } from '../types';
 import type { ExecutorContext } from './effectExecutor';
 import {
@@ -60,6 +61,8 @@ export interface GraveyardSelectRequirement {
   side: PlayerSide; // graveyard_select_recover/equipは自分固定。deck_compare_branchは動的に決まる
   constraint: { min: number; max: number };
   kanjiFilter?: string[]; // 未指定なら墓地の全カードが選択可能
+  // 【追加】特定のカードIDのみを候補にする（方のsourceRestriction:'just_trashed_by_this_effect'用）
+  cardIdFilter?: string[];
   actionLabel: string;
 }
 
@@ -77,11 +80,20 @@ export interface MixedZoneTrashSelectRequirement {
   constraint: { min: number; max: number };
 }
 
+// --- 【追加】然: 相手の山札1番上＋相手の墓地を1つの候補プールとして提示し、1枚選ばせるケース ---
+export interface ZoneMoveSelectRequirement {
+  kind: 'zone_move_select';
+  side: PlayerSide; // resolveSide(effect.targetSide, ownerSide)で解決済みの対象側
+  sourceOptions: ('deck_top' | 'graveyard')[]; // 候補プールに何を含めるか(現状は常に両方)
+}
+
 // --- 反: 対象側のモンスターを選ぶケース ---
 export interface MonsterSelectRequirement {
   kind: 'monster_select';
   side: PlayerSide;
   constraint: { min: number; max: number };
+  // 【追加】候補から除外するモンスターのindex（生・方の「このカードにはつけられない」用）
+  excludeMonsterIndex?: number;
 }
 
 // --- 刃・屍・死・葬: 数値を選ぶケース ---
@@ -115,7 +127,8 @@ export type SelectionRequirement =
   | MonsterSelectRequirement
   | NumberSelectRequirement
   | ChoiceOfEffectsSelectRequirement
-  | JankenSelectRequirement;
+  | JankenSelectRequirement
+  | ZoneMoveSelectRequirement;
 
 /**
  * resolveMonsterEffectがnullを返した効果に対して、既存UIへの誘導が可能か判定する。
@@ -193,13 +206,34 @@ export function describeSelectionRequirement(
       };
     }
 
-    case 'graveyard_select_equip':
+    case 'graveyard_select_equip': {
+      // 【追加】excludeSelf対応: 装備先を選べる場合、phase1として装備先モンスター選択を
+      // 先に返す。ctx.equipTargetMonsterIndexが確定済み(phase2)なら通常のgraveyard_selectへ進む。
+      if (effect.excludeSelf && ctx.equipTargetMonsterIndex === undefined) {
+        if (ctx.sourceMonsterIndex === undefined) return null;
+        return {
+          kind: 'monster_select',
+          side: ctx.ownerSide,
+          constraint: { min: 1, max: 1 },
+          excludeMonsterIndex: ctx.sourceMonsterIndex,
+        };
+      }
+
+      // 【追加】sourceRestriction対応: 直前のステップ(sequence内)で実際に墓地送りにした
+      // カードのみを候補にする(方)。単発発動時はjustTrashedCardIdsがundefinedのため無制限。
+      const cardIdFilter =
+        effect.sourceRestriction === 'just_trashed_by_this_effect'
+          ? ctx.justTrashedCardIds
+          : undefined;
+
       return {
         kind: 'graveyard_select',
         side: ctx.ownerSide,
         constraint: { min: effect.count, max: effect.count },
+        cardIdFilter,
         actionLabel: '選択したカードを装備',
       };
+    }
 
     case 'deck_normalize_to_count': {
       // resolveMonsterEffect側で山札超過時は既に自動解決されているため、ここに来るのは不足時のみ
@@ -264,6 +298,18 @@ export function describeSelectionRequirement(
         maxNumber: effect.maxNumber,
       };
 
+    // 【追加】保: 山札の下から残す枚数を選ばせ、残りをreservedCardsへ送る。
+    // NumberSelectRequirementを流用(刃・屍・死・葬と同じ「数値を1つ選ぶ」UI)。
+    // maxNumberは現在の山札枚数(発動時点で変動するため動的に算出)。
+    case 'deck_partial_to_reserve': {
+      const deck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+      return {
+        kind: 'number_select',
+        minNumber: 0,
+        maxNumber: deck.length,
+      };
+    }
+
     case 'choice_of_effects':
       return {
         kind: 'choice_of_effects_select',
@@ -292,21 +338,38 @@ export function describeSelectionRequirement(
 
     // ============ 【追加】出: 少ない方を動的に判定し、graveyard_select_recoverへ委譲 ============
     case 'deck_compare_branch': {
-      // 実データでは常にgraveyard_select_recover(数値固定count)の形のみ確認済み
       if (effect.fewerSideEffect.effectId !== 'graveyard_select_recover')
         return null;
       const inner = effect.fewerSideEffect;
-      if (inner.count === 'all') return null; // 理論上到達しない
+      if (inner.count === 'all') return null;
+
+      // 【追加】2巡目呼び出し(同数ケースのopponent側)。forcedSideがあれば
+      // 比較計算をスキップしてそのままそのsideを対象にする。
+      if (ctx.forcedSide) {
+        return {
+          kind: 'graveyard_select',
+          side: ctx.forcedSide,
+          constraint: { min: inner.count, max: inner.count },
+          actionLabel: '選択したカードを山札に戻す',
+        };
+      }
 
       const selfDeck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
       const oppDeck = getPlayerState(
         ctx.gameState,
         getOpponentSide(ctx.ownerSide),
       ).deck;
-      // 同数(案B: 両者とも回復)は「選択の連鎖」アーキテクチャが必要(進・得・識・生・方と同じ課題)。
-      // design_document.md 7.6章15番・7.8章3番の作業とあわせて対応する。現状は未対応としてnullを返す
-      // (盤面が同数の間だけ発動ボタンがdisabledになる、既存のdeck_normalize_to_count等と同じ挙動)。
-      if (selfDeck.length === oppDeck.length) return null;
+
+      // 【今回実装】同数(案B: 両者とも回復)。1巡目は自分側から選ばせ、
+      // 確定後にuseEffectExecutor.ts側が相手側を2巡目としてつなげる。
+      if (selfDeck.length === oppDeck.length) {
+        return {
+          kind: 'graveyard_select',
+          side: ctx.ownerSide,
+          constraint: { min: inner.count, max: inner.count },
+          actionLabel: '選択したカードを山札に戻す',
+        };
+      }
 
       const fewerSide =
         selfDeck.length < oppDeck.length
@@ -321,14 +384,40 @@ export function describeSelectionRequirement(
       };
     }
 
+    // 【追加】然: 相手の山札1番上＋相手の墓地を合算候補として提示する。
+    // 「山札1番上は常に0〜1枚・墓地は0枚以上」という非対称性はUI側(ZoneMoveSelectModal)が
+    // グループ分け表示で吸収し、SelectionRequirement自体はどちらのソースを含めるかのみを渡す。
+    case 'select_zone_move_one': {
+      const side = resolveSide(effect.targetSide, ctx.ownerSide);
+      return {
+        kind: 'zone_move_select',
+        side,
+        sourceOptions: effect.sourceOptions,
+      };
+    }
+
+    // 【追加】進: trash_monster_mana(targetScope:'select')。斧(mixed_zone_select_trash)の
+    // 「装備マナ＋山札の混在候補」UIを、装備マナのみ(sources:['monster_mana'])に絞って再利用する。
+    case 'trash_monster_mana': {
+      // 'single'は現状未対応(要件不明のため保留)。'all'はresolveMonsterEffect側で自動解決される。
+      if (effect.targetScope !== 'select') return null;
+      // 【assumption】'all'ケースの既存実装が常にopponent固定(全確認例で確認済み)であるのに倣い、
+      // 'select'も相手モンスターのマナを対象とする前提で実装する。type定義にtargetSideフィールドが
+      // 無く、'select'を使うのは進(m00069)1件のみで他に突き合わせ対象が無いため、この前提が崩れる
+      // 実例が今後見つかった場合は要修正。
+      const side = getOpponentSide(ctx.ownerSide);
+      return {
+        kind: 'mixed_zone_trash_select',
+        side,
+        sources: ['monster_mana'],
+        constraint: { min: effect.count ?? 1, max: effect.count ?? 1 },
+      };
+    }
+
     // ============ 見送り: 現状該当カードが'both'/'choose'のみのため（3章参照） ============
     // 型としてはDeckReorderRequirement.scope: {partialTopCount}を既に用意してあるため、
     // self/opponent固定のカードが増えた際はdeck_full_reorderと同様の実装で対応可能
     case 'deck_partial_reorder':
-      return null;
-
-    // ============ 見送り: 複数ゾーンにまたがるため、単一DeckModalでは表現しきれない ============
-    case 'select_zone_move_one':
       return null;
 
     // ============ 見送り: 外部勝敗システム接続待ち(design_document.md 7.6章2番) ============
@@ -343,7 +432,6 @@ export function describeSelectionRequirement(
     // ============ そもそも選択不要(resolveMonsterEffectで自動解決されるはずの効果) ============
     // ここに来ることは基本ないが、呼び出し順序の誤り等で来た場合に備えnullを返す
     case 'deck_reduce_fixed':
-    case 'trash_monster_mana':
     case 'graveyard_kanji_count_threshold':
     case 'graveyard_kanji_count_linear':
     case 'deck_keep_rest_trash':
@@ -352,6 +440,7 @@ export function describeSelectionRequirement(
     case 'monster_remove_from_game':
     case 'draw_and_play_n':
     case 'swap_deck_and_graveyard':
+    case 'deck_mark_delayed_reduce':
       return null;
 
     // ============ sequence / custom ============
@@ -411,7 +500,9 @@ export type EffectSelectionAnswer =
   | { kind: 'choice_of_effects_select'; selectedIndex: number }
   // 【追加】じゃんけんの決着結果。JankenModal内部でランダムに決着し、その結果のみを返す
   // (「何を選んだか」ではなく「どう決着したか」を返す点が他のkindと異なる)。
-  | { kind: 'janken_select'; outcome: 'win' | 'tie' | 'lose' };
+  | { kind: 'janken_select'; outcome: 'win' | 'tie' | 'lose' }
+  // 【追加】然: 選ばれたカードID(山札1番上か墓地のいずれか)を返す
+  | { kind: 'zone_move_select'; selectedCardId: string };
 
 /**
  * describeSelectionRequirementで示した内容に対する回答(answer)を受けて、
@@ -538,12 +629,17 @@ export function buildActionsFromSelection(
 
     case 'graveyard_select_equip': {
       if (answer.kind !== 'graveyard_select') return null;
-      if (ctx.sourceMonsterIndex === undefined) return null;
+      // 【追加】phase1(monster_select)で装備先が選ばれていればそちらを優先。
+      // excludeSelfを使わない既存3件はctx.equipTargetMonsterIndexが常にundefinedのため
+      // 従来通りsourceMonsterIndex(発動元自身)が装備先になる。
+      const targetMonsterIndex =
+        ctx.equipTargetMonsterIndex ?? ctx.sourceMonsterIndex;
+      if (targetMonsterIndex === undefined) return null;
       return answer.selectedCardIds.map((cardId) => ({
         type: 'EQUIP_SPECIFIC_MANA',
         payload: {
           side: ctx.ownerSide,
-          monsterIndex: ctx.sourceMonsterIndex!,
+          monsterIndex: targetMonsterIndex,
           sourceZone: 'cemetery',
           manaCardId: cardId,
         },
@@ -654,6 +750,35 @@ export function buildActionsFromSelection(
       return actions;
     }
 
+    // 【追加】進: trash_monster_mana(select)の確定処理。斧のグルーピングロジックを踏襲するが、
+    // 候補が装備マナのみ(sources:['monster_mana']固定)なので山札分の分岐は不要。
+    case 'trash_monster_mana': {
+      if (effect.targetScope !== 'select') return null;
+      if (answer.kind !== 'mixed_zone_trash_select') return null;
+      const side = getOpponentSide(ctx.ownerSide);
+      const playerState = getPlayerState(ctx.gameState, side);
+      const manaByMonster: Record<number, string[]> = {};
+      answer.selectedCardIds.forEach((cardId) => {
+        const monsterIndex = playerState.monsters.findIndex((m) =>
+          m.equippedMana.some((mana) => mana?.id === cardId),
+        );
+        if (monsterIndex !== -1) {
+          (manaByMonster[monsterIndex] ??= []).push(cardId);
+        }
+      });
+      return Object.entries(manaByMonster).map(
+        ([monsterIndexStr, manaIds]) => ({
+          type: 'TRASH_MANA',
+          payload: {
+            side,
+            monsterIndex: Number(monsterIndexStr),
+            manaCardIds: manaIds,
+            destination: 'cemetery',
+          },
+        }),
+      );
+    }
+
     case 'flip_monster_facedown': {
       if (answer.kind !== 'monster_select') return null;
       const side = resolveSide(effect.targetSide, ctx.ownerSide);
@@ -721,6 +846,33 @@ export function buildActionsFromSelection(
         }
       }
       return actions;
+    }
+
+    // 【追加】保: 選ばれた数値=「下から残す枚数」。残り(=山札の上から詰めた分)をreservedCardsへ。
+    // 山札配列のindex 0が「山札の一番上」という既存規約(takeTopDeckIds等)に基づき、
+    // 「下から残す」= 配列の末尾からkeepCount枚を山札に残し、残り(先頭側)を保持ゾーンへ送る。
+    case 'deck_partial_to_reserve': {
+      if (answer.kind !== 'number_select') return null;
+      if (ctx.sourceMonsterIndex === undefined) return null;
+      const keepCount = answer.selectedNumber;
+      const deck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+      const reserveCount = Math.max(0, deck.length - keepCount);
+      if (reserveCount === 0) return [];
+
+      const reservedCardIds = deck.slice(0, reserveCount).map((c) => c.id);
+
+      // 既存のMOVE_CARD_BETWEEN_ZONESはdeck/cemetery/exile/pendingしか対象にできないため、
+      // reservedCardsへの移動には対応していない。新規Actionが必要。
+      return [
+        {
+          type: 'MOVE_CARD_TO_RESERVE',
+          payload: {
+            side: ctx.ownerSide,
+            monsterIndex: ctx.sourceMonsterIndex,
+            cardIds: reservedCardIds,
+          },
+        },
+      ];
     }
 
     case 'graveyard_recover_then_deck_trash_matching_count': {
@@ -833,26 +985,33 @@ export function buildActionsFromSelection(
       if (answer.kind !== 'graveyard_select') return null;
       if (effect.fewerSideEffect.effectId !== 'graveyard_select_recover')
         return null;
-
-      const selfDeck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
-      const oppDeck = getPlayerState(
-        ctx.gameState,
-        getOpponentSide(ctx.ownerSide),
-      ).deck;
-      if (selfDeck.length === oppDeck.length) return null; // 同数(案B)は現状未対応
-
-      const fewerSide =
-        selfDeck.length < oppDeck.length
-          ? ctx.ownerSide
-          : getOpponentSide(ctx.ownerSide);
       const placement = effect.fewerSideEffect.placement;
+
+      // 【追加】forcedSideがあれば(2巡目)そのまま使う。無ければ(1巡目)最新状態で再判定する
+      // (選択待ちの間に盤面が変化していても、確定時点の最新状態を基準にするため。1.3章の設計方針に準拠)。
+      let targetSide: PlayerSide;
+      if (ctx.forcedSide) {
+        targetSide = ctx.forcedSide;
+      } else {
+        const selfDeck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+        const oppDeck = getPlayerState(
+          ctx.gameState,
+          getOpponentSide(ctx.ownerSide),
+        ).deck;
+        targetSide =
+          selfDeck.length === oppDeck.length
+            ? ctx.ownerSide // 同数の1巡目は常に自分側から
+            : selfDeck.length < oppDeck.length
+              ? ctx.ownerSide
+              : getOpponentSide(ctx.ownerSide);
+      }
 
       const actions: GameAction[] = [
         {
           type: 'MOVE_CARD_BETWEEN_ZONES',
           payload: {
-            sourceSide: fewerSide,
-            targetSide: fewerSide,
+            sourceSide: targetSide,
+            targetSide: targetSide,
             cardIds: answer.selectedCardIds,
             sourceZone: 'cemetery',
             targetZone: 'deck',
@@ -862,12 +1021,35 @@ export function buildActionsFromSelection(
       if (placement === 'top') {
         actions.push({
           type: 'REORDER_DECK',
-          payload: { side: fewerSide, orderedCardIds: answer.selectedCardIds },
+          payload: { side: targetSide, orderedCardIds: answer.selectedCardIds },
         });
       } else {
-        actions.push({ type: 'SHUFFLE_DECK', payload: { side: fewerSide } });
+        actions.push({ type: 'SHUFFLE_DECK', payload: { side: targetSide } });
       }
       return actions;
+    }
+
+    // 【追加】然: 選択されたカードが山札の1番上か墓地かを、確定時点の最新状態で判定する
+    // (選択待ちの間に盤面が変化する可能性を考慮。1.3章の設計方針に準拠。
+    // 特に然はターン開始のたびに毎回発動しうるため、他の効果より状態変化の機会が多い点に留意)。
+    case 'select_zone_move_one': {
+      if (answer.kind !== 'zone_move_select') return null;
+      const side = resolveSide(effect.targetSide, ctx.ownerSide);
+      const playerState = getPlayerState(ctx.gameState, side);
+      const isDeckTop = playerState.deck[0]?.id === answer.selectedCardId;
+      const sourceZone: ZoneType = isDeckTop ? 'deck' : 'cemetery';
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: side,
+            targetSide: side,
+            cardIds: [answer.selectedCardId],
+            sourceZone,
+            targetZone: effect.destination, // 型上は常に'exile'
+          },
+        },
+      ];
     }
 
     // それ以外は今回未実装。describeSelectionRequirement側で既にnullを返しているため

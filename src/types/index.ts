@@ -2,15 +2,6 @@
 // --- フェーズ定義 ---
 export type GamePhase = 'start' | 'draw' | 'main' | 'end';
 
-// --- マナカード ---
-export interface ManaCard {
-  id: string;
-  hexColor: string; // 個別のUI描画用HEXカラーコード
-  kanji: string; // マナの漢字
-  reading: string; // マナの読み
-  imageUrl?: string;
-}
-
 // ============================================================
 // フェーズ5: モンスター効果ショートカット化
 // ============================================================
@@ -221,7 +212,17 @@ export type MonsterEffect =
       count: number;
     }
   | { effectId: 'sequence'; steps: MonsterEffect[] }
-  | { effectId: 'custom'; handlerKey: string };
+  | { effectId: 'custom'; handlerKey: string }
+  | { effectId: 'deck_partial_to_reserve'; destination: 'reservedCards' }
+  // 【追加】忍(m00067)で確認：山札の指定位置のカードに遅延効果をマークし、
+  // 実際にそのカードがドローされた時点で追加の山札減少が発動する。
+  | {
+      effectId: 'deck_mark_delayed_reduce';
+      targetSide: RelativeSide;
+      revealPosition: number; // 上から何枚目にマークするか(1始まり。忍は3)
+      reduceCount: number; // ドロー時に追加で山札から減らす枚数(忍は7)
+      destination?: 'cemetery' | 'exile'; // 未指定ならcemetery
+    };
 
 // --- 永続効果（表向き固定、盤面に残り続けて以後の処理に割り込む） ---
 export type PassiveEffect =
@@ -290,7 +291,6 @@ export type PassiveEffect =
       trigger: 'own_mana_trashed_by_opponent_reaction';
       selectAndEquipCount: number;
     };
-// 【削除】flip_monster_facedownはMonsterEffect側へ移動（反は永続効果ではないため）
 
 // --- マナカード ---
 export interface ManaCard {
@@ -299,6 +299,9 @@ export interface ManaCard {
   kanji: string; // マナの漢字
   reading: string; // マナの読み
   imageUrl?: string;
+  // 【追加】忍等の「ドローされた瞬間に追加効果が発動する」トラップマーク。
+  // deck_mark_delayed_reduceが仕込み、AUTO_DRAW側で検知・消費する。
+  trapEffect?: { reduceCount: number; destination: 'cemetery' | 'exile' };
 }
 
 // --- モンスターカード ---
@@ -423,6 +426,11 @@ export type MoveCardBetweenZonesAction = {
   };
 };
 
+export type MoveCardToReserveAction = {
+  type: 'MOVE_CARD_TO_RESERVE';
+  payload: { side: PlayerSide; monsterIndex: number; cardIds: string[] };
+};
+
 export type ReorderDeckAction = {
   type: 'REORDER_DECK';
   payload: { side: PlayerSide; orderedCardIds: string[] };
@@ -441,6 +449,16 @@ export type SetInitialStateAction = {
   };
 };
 
+export type SetDeckCardTrapAction = {
+  type: 'SET_DECK_CARD_TRAP';
+  payload: {
+    side: PlayerSide;
+    cardId: string;
+    reduceCount: number;
+    destination: 'cemetery' | 'exile';
+  };
+};
+
 export type GameAction =
   | EquipManaAction
   | TrashManaAction
@@ -449,9 +467,11 @@ export type GameAction =
   | FlipMonsterAction
   | EquipSpecificManaAction
   | MoveCardBetweenZonesAction
+  | MoveCardToReserveAction
   | ReorderDeckAction
   | ShuffleDeckAction
   | SetInitialStateAction
+  | SetDeckCardTrapAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }

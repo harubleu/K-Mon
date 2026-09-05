@@ -166,9 +166,17 @@ export function getActivatableEffect(
 }
 
 export interface ExecutorContext {
-  ownerSide: PlayerSide; // この効果を持つモンスターを操作しているプレイヤー
+  ownerSide: PlayerSide;
   gameState: GameState;
-  sourceMonsterIndex?: number; // 【追加】発動元モンスターのindex（装備先の特定に使用。未配線）
+  sourceMonsterIndex?: number;
+  justTrashedCardIds?: string[];
+  // 【追加・出の同数ケース専用】deck_compare_branchの2巡目呼び出し時、
+  // 「今回はこちらのsideを対象にする」と明示的に強制するためのフィールド。
+  // 1巡目(通常の少ない方判定、または同数時の自分側)では未指定で、動的に判定する。
+  forcedSide?: PlayerSide;
+  // 【追加・生方のexcludeSelf対応】phase1(monster_select)で選ばれた装備先モンスターのindex。
+  // phase2(graveyard_select_equipの実処理)でsourceMonsterIndexの代わりに使う。
+  equipTargetMonsterIndex?: number;
 }
 
 /**
@@ -492,6 +500,27 @@ export function resolveMonsterEffect(
       return actions;
     }
 
+    // 【追加】忍で確認：山札の指定位置のカードに遅延効果をマークする。位置はカード固有の
+    // 値であり選択を挟まないため完全自動解決の対象。実際の追加減少処理は
+    // useGameState.tsのAUTO_DRAW内で、マークされたカードが引かれた時点に行う。
+    case 'deck_mark_delayed_reduce': {
+      const targetSide = resolveSide(effect.targetSide, ownerSide);
+      const targetDeck = getPlayerState(gameState, targetSide).deck;
+      const targetCard = targetDeck[effect.revealPosition - 1];
+      if (!targetCard) return [];
+      return [
+        {
+          type: 'SET_DECK_CARD_TRAP',
+          payload: {
+            side: targetSide,
+            cardId: targetCard.id,
+            reduceCount: effect.reduceCount,
+            destination: effect.destination ?? 'cemetery',
+          },
+        },
+      ];
+    }
+
     // 以下、選択・外部システム（勝敗判定）接続・複雑な副作用のいずれかが必要なため未対応（null）。
     // 対応が必要になった時点で、既存UI（DeckModal/JankenModal/MoveDestinationSelector）との
     // 連携方式を別途設計すること（design_document.md 7.8章参照）。
@@ -510,6 +539,7 @@ export function resolveMonsterEffect(
     case 'deck_count_tiered_effect':
     case 'deck_select_trash':
     case 'deck_partial_reorder':
+    case 'deck_partial_to_reserve':
     case 'deck_kanji_search_equip':
     case 'graveyard_total_count_threshold_win':
     case 'mixed_zone_select_trash':

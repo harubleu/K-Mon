@@ -375,7 +375,13 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   // 忍: 本・政と同系統のManaCardタグ付けが必要な遅延発動効果
   // 忍（ニン）
   m00067: {
-    effect: { effectId: 'custom', handlerKey: 'nin_delayed_deck_trap' },
+    effect: {
+      effectId: 'deck_mark_delayed_reduce',
+      targetSide: 'opponent',
+      revealPosition: 3,
+      reduceCount: 7,
+      destination: 'cemetery',
+    },
   },
   // 刃（ジン）
   m00068: {
@@ -769,8 +775,8 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   // 保（ホ）
   m00106: {
     effect: {
-      effectId: 'custom',
-      handlerKey: 'ho_reserve_zone_deck_protection',
+      effectId: 'deck_partial_to_reserve',
+      destination: 'reservedCards',
     },
   },
   // 派: 発動時にユーザーが上位8枚から色を選択する想定

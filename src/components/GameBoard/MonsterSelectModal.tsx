@@ -9,6 +9,8 @@ interface MonsterSelectModalProps {
   isOpen: boolean;
   monsters: MonsterCard[];
   constraint: { min: number; max: number };
+  // 【追加】生・方の「このカードにはつけられない」用。このindexのモンスターは選択不可にする
+  excludeMonsterIndex?: number;
   onConfirm: (selectedMonsterIndexes: number[]) => void;
   onCancel: () => void;
 }
@@ -17,6 +19,7 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
   isOpen,
   monsters,
   constraint,
+  excludeMonsterIndex,
   onConfirm,
   onCancel,
 }) => {
@@ -25,6 +28,7 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
   if (!isOpen) return null;
 
   const toggle = (index: number) => {
+    if (index === excludeMonsterIndex) return;
     setSelected((prev) =>
       prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index],
     );
@@ -73,16 +77,23 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {monsters.map((monster, index) => {
             const isSelected = selected.includes(index);
+            const isExcluded = index === excludeMonsterIndex;
             return (
               <button
                 key={monster.id}
                 onClick={() => toggle(index)}
+                disabled={isExcluded}
                 style={{
                   padding: '10px',
-                  cursor: 'pointer',
+                  cursor: isExcluded ? 'not-allowed' : 'pointer',
                   border: isSelected ? '3px solid #007bff' : '1px solid #ccc',
                   borderRadius: '6px',
-                  backgroundColor: isSelected ? '#e6f0ff' : '#fff',
+                  backgroundColor: isExcluded
+                    ? '#f0f0f0'
+                    : isSelected
+                      ? '#e6f0ff'
+                      : '#fff',
+                  opacity: isExcluded ? 0.5 : 1,
                   textAlign: 'left',
                 }}
               >
@@ -96,6 +107,17 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
                     }}
                   >
                     (すでに裏面)
+                  </span>
+                )}
+                {isExcluded && (
+                  <span
+                    style={{
+                      fontSize: '0.75rem',
+                      color: '#c00',
+                      marginLeft: '8px',
+                    }}
+                  >
+                    (このカードにはつけられない)
                   </span>
                 )}
               </button>

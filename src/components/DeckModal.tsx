@@ -283,6 +283,8 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                 effectKanjiSelect ||
                 !effectSelection?.kanjiFilter ||
                 effectSelection.kanjiFilter.includes(card.kanji);
+              // 【追加・忍】deck_mark_delayed_reduceで仕込まれたトラップの可視化
+              const isTrapped = !!card.trapEffect;
               return (
                 <div
                   key={card.id}
@@ -308,6 +310,28 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                     boxSizing: 'border-box',
                   }}
                 >
+                  {isTrapped && (
+                    <span
+                      title={`ドロー時に山札を${card.trapEffect?.reduceCount}枚失うトラップが仕込まれています`}
+                      style={{
+                        position: 'absolute',
+                        top: '-8px',
+                        right: '-8px',
+                        backgroundColor: '#dc2626',
+                        color: '#fff',
+                        borderRadius: '50%',
+                        width: '20px',
+                        height: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.7rem',
+                        zIndex: 1,
+                      }}
+                    >
+                      !
+                    </span>
+                  )}
                   <DraggableMana mana={card} side={side} sourceZone='deck'>
                     <Card card={card} />
                   </DraggableMana>

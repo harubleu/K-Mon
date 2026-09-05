@@ -10,6 +10,7 @@ import type {
   GameStatus,
   ZoneType,
   PlayerSide,
+  PlayerState,
 } from '../types';
 
 // --- 追加: ログ生成・勝敗判定用ヘルパー関数 ---
@@ -39,6 +40,35 @@ const getZoneLabel = (zone: ZoneType): string => {
     default:
       return zone;
   }
+};
+
+// 【追加】保: 表面かつreservedCardsを持つモンスターがいる側の山札が0の場合、
+// そのreservedCardsを山札へ戻す(ターン終了時の決定的処理。選択UIは不要)。
+// 「効果発動」ボタン経由ではなく、AUTO_DRAWと同種のReducer内蔵処理として扱う。
+const returnReservedCardsIfDeckEmpty = (
+  playerState: PlayerState,
+): PlayerState => {
+  if (playerState.deck.length > 0) return playerState;
+
+  const targetMonsterIndex = playerState.monsters.findIndex(
+    (m) => !m.isFlipped && m.reservedCards && m.reservedCards.length > 0,
+  );
+  if (targetMonsterIndex === -1) return playerState;
+
+  const targetMonster = playerState.monsters[targetMonsterIndex];
+  const returningCards = targetMonster.reservedCards ?? [];
+
+  const updatedMonsters = playerState.monsters.map((m, idx) =>
+    idx === targetMonsterIndex
+      ? { ...m, reservedCards: [], isFlipped: true }
+      : m,
+  );
+
+  return {
+    ...playerState,
+    deck: shuffleArray([...playerState.deck, ...returningCards]),
+    monsters: updatedMonsters,
+  };
 };
 
 const evaluateGameStatus = (
@@ -167,6 +197,60 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
     case 'NEXT_PHASE': {
       const { turnPlayer, turnCount } = state;
+
+      // 【追加】ターン終了時、保による山札復帰処理を先に適用する(選択不要・決定的)。
+      // その後の状態で勝敗判定を行うことで、保が発動できた場合は決着を回避できる。
+      const playerAfterReserve = returnReservedCardsIfDeckEmpty(state.player);
+      const opponentAfterReserve = returnReservedCardsIfDeckEmpty(
+        state.opponent,
+      );
+      const stateAfterReserve = {
+        ...state,
+        player: playerAfterReserve,
+        opponent: opponentAfterReserve,
+      };
+
+      // 【追加】勝敗判定をここに集約。ターン終了の瞬間(=次のプレイヤーへ移る直前)にのみ判定する。
+      // 公式ルール「山札0でもそのターン中は効果発動でき、逆転できる」に基づき、
+      // 山札を減らす他のAction(DAMAGE・MOVE_CARD_BETWEEN_ZONES等)からは判定を行わない。
+      const { status, alertLog } = evaluateGameStatus(
+        stateAfterReserve.player.deck.length,
+        stateAfterReserve.opponent.deck.length,
+        state.gameStatus,
+      );
+
+      const reserveLogs: ActionLog[] = [];
+      if (playerAfterReserve !== state.player) {
+        reserveLogs.push(
+          createLog(
+            'system',
+            `${getSideLabel('player')}の保が発動し、保持していたカードを山札へ戻しました。`,
+          ),
+        );
+      }
+      if (opponentAfterReserve !== state.opponent) {
+        reserveLogs.push(
+          createLog(
+            'system',
+            `${getSideLabel('opponent')}の保が発動し、保持していたカードを山札へ戻しました。`,
+          ),
+        );
+      }
+
+      // 【追加】決着した場合はターンプレイヤーを切り替えず、ここで停止する
+      // (負けの直前のプレイヤーの手番のまま、GameStatusAlertModalで通知する)。
+      if (status !== 'playing') {
+        return {
+          ...stateAfterReserve,
+          gameStatus: status,
+          logs: [
+            ...(alertLog ? [alertLog] : []),
+            ...reserveLogs,
+            ...state.logs,
+          ],
+        };
+      }
+
       const nextTurnPlayer = turnPlayer === 'player' ? 'opponent' : 'player';
       const nextTurnCount =
         turnPlayer === 'opponent' ? turnCount + 1 : turnCount;
@@ -176,13 +260,17 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           'system',
           `ターン ${nextTurnCount} 開始 (${getSideLabel(nextTurnPlayer)}のターン)`,
         ),
+        ...reserveLogs,
         ...state.logs,
       ];
 
       return {
-        ...state,
+        ...stateAfterReserve,
         turnPlayer: nextTurnPlayer,
         turnCount: nextTurnCount,
+        // 【追加】ターン交代後は必ずstartフェーズへ。own_turn_startパイプラインの判定が
+        // 名実ともに正しく機能するようになる。
+        currentPhase: 'start',
         logs: newLogs,
       };
     }
@@ -194,27 +282,50 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const [drawnCard, ...remainingDeck] = player.deck;
 
+      // 【追加・忍】引いたカードがtrapEffectを持っていた場合、山札の上からreduceCount枚を
+      // 追加でdestinationへ送る(決定的処理・選択不要)。発動は1回限りのため、
+      // drawnCard自体からはtrapEffectを消費済みとして取り除く。
+      let deckAfterTrap = remainingDeck;
+      let cemeteryAfterTrap = player.cemetery;
+      let exileAfterTrap = player.exile;
+      const trapLogs: ActionLog[] = [];
+      const { trapEffect, ...drawnCardWithoutTrap } = drawnCard;
+
+      if (trapEffect) {
+        const { reduceCount, destination } = trapEffect;
+        const trashedCards = deckAfterTrap.slice(0, reduceCount);
+        deckAfterTrap = deckAfterTrap.slice(reduceCount);
+        if (destination === 'exile') {
+          exileAfterTrap = [...exileAfterTrap, ...trashedCards];
+        } else {
+          cemeteryAfterTrap = [...cemeteryAfterTrap, ...trashedCards];
+        }
+        trapLogs.push(
+          createLog(
+            'alert',
+            `${getSideLabel(targetSide)}が仕込まれたトラップを踏み抜き、山札を${trashedCards.length}枚失いました。`,
+          ),
+        );
+      }
+
       const nextState = {
         ...state,
         [targetSide]: {
           ...player,
-          deck: remainingDeck,
-          pendingDrawCards: [...player.pendingDrawCards, drawnCard],
+          deck: deckAfterTrap,
+          cemetery: cemeteryAfterTrap,
+          exile: exileAfterTrap,
+          pendingDrawCards: [...player.pendingDrawCards, drawnCardWithoutTrap],
         },
       };
 
-      const { status, alertLog } = evaluateGameStatus(
-        nextState.player.deck.length,
-        nextState.opponent.deck.length,
-        state.gameStatus,
-      );
       const newLogs = [
+        ...trapLogs,
         createLog('draw', `${getSideLabel(targetSide)}が1枚ドローしました。`),
         ...state.logs,
       ];
-      if (alertLog) newLogs.unshift(alertLog);
 
-      return { ...nextState, logs: newLogs, gameStatus: status };
+      return { ...nextState, logs: newLogs };
     }
 
     case 'EQUIP_MANA': {
@@ -250,11 +361,6 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         },
       };
 
-      const { status, alertLog } = evaluateGameStatus(
-        nextState.player.deck.length,
-        nextState.opponent.deck.length,
-        state.gameStatus,
-      );
       const newLogs = [
         createLog(
           'mana',
@@ -262,9 +368,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ),
         ...state.logs,
       ];
-      if (alertLog) newLogs.unshift(alertLog);
 
-      return { ...nextState, logs: newLogs, gameStatus: status };
+      return { ...nextState, logs: newLogs };
     }
 
     case 'TRASH_MANA': {
@@ -337,11 +442,6 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         },
       };
 
-      const { status, alertLog } = evaluateGameStatus(
-        nextState.player.deck.length,
-        nextState.opponent.deck.length,
-        state.gameStatus,
-      );
       const newLogs = [
         createLog(
           'attack',
@@ -349,9 +449,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ),
         ...state.logs,
       ];
-      if (alertLog) newLogs.unshift(alertLog);
 
-      return { ...nextState, logs: newLogs, gameStatus: status };
+      return { ...nextState, logs: newLogs };
     }
 
     case 'RECOVER': {
@@ -382,11 +481,6 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         },
       };
 
-      const { status, alertLog } = evaluateGameStatus(
-        nextState.player.deck.length,
-        nextState.opponent.deck.length,
-        state.gameStatus,
-      );
       const newLogs = [
         createLog(
           'system',
@@ -394,9 +488,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ),
         ...state.logs,
       ];
-      if (alertLog) newLogs.unshift(alertLog);
 
-      return { ...nextState, logs: newLogs, gameStatus: status };
+      return { ...nextState, logs: newLogs };
     }
 
     case 'FLIP_MONSTER': {
@@ -495,15 +588,10 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       };
 
       const logMsg = `${getSideLabel(side)}の「${player.monsters[monsterIndex].name || `モンスター${monsterIndex + 1}`}」にマナ「${cardToEquip.kanji}」を装備しました。`;
-      const { status, alertLog } = evaluateGameStatus(
-        nextState.player.deck.length,
-        nextState.opponent.deck.length,
-        state.gameStatus,
-      );
-      const newLogs = [createLog('mana', logMsg), ...state.logs];
-      if (alertLog) newLogs.unshift(alertLog);
 
-      return { ...nextState, logs: newLogs, gameStatus: status };
+      const newLogs = [createLog('mana', logMsg), ...state.logs];
+
+      return { ...nextState, logs: newLogs };
     }
 
     case 'MOVE_CARD_BETWEEN_ZONES': {
@@ -574,15 +662,9 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         sourceZone === 'deck' && targetZone === 'pending' ? 'draw' : 'system';
       const moveMsg = `${getSideLabel(sourceSide)}の${getZoneLabel(sourceZone)}から${getSideLabel(targetSide)}の${getZoneLabel(targetZone)}へ ${movingCards.length} 枚カードを移動しました。`;
 
-      const { status, alertLog } = evaluateGameStatus(
-        nextState.player.deck.length,
-        nextState.opponent.deck.length,
-        state.gameStatus,
-      );
       const newLogs = [createLog(logType, moveMsg), ...state.logs];
-      if (alertLog) newLogs.unshift(alertLog);
 
-      return { ...nextState, logs: newLogs, gameStatus: status };
+      return { ...nextState, logs: newLogs };
     }
 
     case 'REORDER_DECK': {
@@ -606,6 +688,76 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           createLog(
             'system',
             `${getSideLabel(side)}の山札の並び順を変更しました。`,
+          ),
+          ...state.logs,
+        ],
+      };
+    }
+
+    case 'MOVE_CARD_TO_RESERVE': {
+      const { side, monsterIndex, cardIds } = action.payload;
+      const player = state[side];
+      const monster = player.monsters[monsterIndex];
+      if (!monster) return state;
+
+      const movingCards: ManaCard[] = [];
+      const remainingDeck = player.deck.filter((c) => {
+        if (cardIds.includes(c.id)) {
+          movingCards.push(c);
+          return false;
+        }
+        return true;
+      });
+      if (movingCards.length === 0) return state;
+
+      const updatedMonsters = player.monsters.map((m, idx) =>
+        idx === monsterIndex
+          ? {
+              ...m,
+              reservedCards: [...(m.reservedCards ?? []), ...movingCards],
+            }
+          : m,
+      );
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          deck: remainingDeck,
+          monsters: updatedMonsters,
+        },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の「${monster.name || `モンスター${monsterIndex + 1}`}」が山札から ${movingCards.length} 枚を保持しました。`,
+          ),
+          ...state.logs,
+        ],
+      };
+    }
+
+    case 'SET_DECK_CARD_TRAP': {
+      const { side, cardId, reduceCount, destination } = action.payload;
+      const player = state[side];
+      const cardExists = player.deck.some((c) => c.id === cardId);
+      if (!cardExists) return state;
+
+      const updatedDeck = player.deck.map((c) =>
+        c.id === cardId
+          ? { ...c, trapEffect: { reduceCount, destination } }
+          : c,
+      );
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          deck: updatedDeck,
+        },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の山札のカードにトラップ効果が仕込まれました。`,
           ),
           ...state.logs,
         ],

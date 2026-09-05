@@ -37,6 +37,9 @@ export interface CemeteryAndExileModalProps {
   effectSelection?: {
     constraint: { min: number; max: number };
     kanjiFilter?: string[];
+    // 【追加】方のsourceRestriction:'just_trashed_by_this_effect'用。
+    // 指定時、このIDに含まれるカードのみ選択可能にする(kanjiFilterと併用時はAND条件)
+    cardIdFilter?: string[];
     actionLabel: string;
     onConfirm: (selectedCardIds: string[]) => void;
     onCancel: () => void;
@@ -187,9 +190,13 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
           ) : (
             currentCards.map((card) => {
               const isSelected = selectedIds.includes(card.id);
-              const isSelectable =
+              const passesKanjiFilter =
                 !effectSelection?.kanjiFilter ||
                 effectSelection.kanjiFilter.includes(card.kanji);
+              const passesCardIdFilter =
+                !effectSelection?.cardIdFilter ||
+                effectSelection.cardIdFilter.includes(card.id);
+              const isSelectable = passesKanjiFilter && passesCardIdFilter;
               return (
                 <div
                   key={card.id}

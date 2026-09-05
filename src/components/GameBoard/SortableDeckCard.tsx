@@ -43,6 +43,29 @@ export const SortableDeckCard: React.FC<SortableDeckCardProps> = ({
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       <Card card={card} />
+      {/* 【追加・忍】deck_mark_delayed_reduceで仕込まれたトラップの可視化。
+          並び順バッジ(右上)と衝突しないよう左上に配置 */}
+      {card.trapEffect && (
+        <span
+          title={`ドロー時に山札を${card.trapEffect.reduceCount}枚失うトラップが仕込まれています`}
+          style={{
+            position: 'absolute',
+            top: '-8px',
+            left: '-8px',
+            backgroundColor: '#dc2626',
+            color: '#fff',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            fontSize: '0.7rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          !
+        </span>
+      )}
       <span
         style={{
           position: 'absolute',
