@@ -29,7 +29,13 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
     },
   },
   // 兄（ケイ）
-  m00003: { effect: { effectId: 'graveyard_select_equip', count: 1 } },
+  m00003: {
+    effect: {
+      effectId: 'graveyard_select_equip',
+      count: 1,
+      monsterTargetMode: 'include_self',
+    },
+  },
   // 残（ザン）
   m00004: { effect: { effectId: 'deck_reduce_fixed', count: 6 } },
   // 列（レツ）
@@ -330,12 +336,15 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   m00060: {
     effect: { effectId: 'deck_reduce_fixed', count: 2, destination: 'exile' },
   },
-  // 注: 浮との発動順依存の置換効果。custom（design_document.md 7.5節参照）
+  // 注: MonsterEffect(custom)から移設。実態はPassiveEffect(浮・抑・重・扱・返・圧・敵と同種の
+  // 常時パッシブ)。自分の効果が相手の山札を減らす瞬間に割り込み、自分-1・相手-5へ丸ごと置換する。
+  // 浮のmitigate_deck_reduce_effectが先に適用され実質0枚になった場合はこの発動条件を満たさない。
   // 注（チュウ）
   m00061: {
-    effect: {
-      effectId: 'custom',
-      handlerKey: 'chu_redirect_own_reduce_to_opponent',
+    passiveEffect: {
+      trigger: 'replace_own_effect_opponent_reduce',
+      selfCost: 1,
+      opponentCount: 5,
     },
   },
   // 脈（ミャク）
@@ -362,12 +371,15 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       onMatch: { targetSide: 'opponent', count: 5 },
     },
   },
-  // 育: 発動回数カウンタの型設計が未決定のため暫定custom（未解決論点9参照）
+  // 育: 原文確認済み。custom→専用effectId(deck_reduce_scaling_by_activation_count)へ昇格。
   // 育（イク）
   m00065: {
     effect: {
-      effectId: 'custom',
-      handlerKey: 'iku_scaling_by_activation_count',
+      effectId: 'deck_reduce_scaling_by_activation_count',
+      tiers: [
+        { maxCount: 2, reduceCount: 2 },
+        { maxCount: Infinity, reduceCount: 4 },
+      ],
     },
   },
   // 認（ニン）
@@ -426,13 +438,10 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   m00072: {
     effect: { effectId: 'trash_monster_mana', targetScope: 'select', count: 2 },
   },
-  // 電: ターン進行システムへの介入が必要（未解決論点、design_document.md 6章参照）。暫定custom
+  // 電: 原文確認済み。custom→専用effectId(deck_reduce_grant_extra_turn)へ昇格。
   // 電（デン）
   m00073: {
-    effect: {
-      effectId: 'custom',
-      handlerKey: 'den_deck_reduce_and_extra_turn',
-    },
+    effect: { effectId: 'deck_reduce_grant_extra_turn', count: 2 },
   },
   // 伸（シン）
   m00074: {
@@ -652,7 +661,11 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
           destination: 'cemetery',
           shuffleAfter: true,
         },
-        { effectId: 'graveyard_select_equip', count: 2, excludeSelf: true },
+        {
+          effectId: 'graveyard_select_equip',
+          count: 2,
+          monsterTargetMode: 'exclude_self',
+        },
       ],
     },
   },
@@ -673,10 +686,10 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       onMatch: { targetSide: 'opponent', count: 11 },
     },
   },
-  // 明: 両者山札の最上位を常時公開するグローバル可視性ルール変更
+  // 明: 原文確認済み。custom→専用effectId(reveal_both_top_until_shuffle)へ昇格。
   // 明（メイ）
   m00092: {
-    effect: { effectId: 'custom', handlerKey: 'mei_flip_both_decks_visible' },
+    effect: { effectId: 'reveal_both_top_until_shuffle' },
   },
   // 名（メイ）
   m00093: {
@@ -853,10 +866,10 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       shuffleAfter: false,
     },
   },
-  // 採: 他モンスターのslotsデータを実行時に参照する必要がある
+  // 採: 原文確認済み。custom→専用effectId(graveyard_auto_equip_by_target_slots)へ昇格。
   // 採（サイ）
   m00115: {
-    effect: { effectId: 'custom', handlerKey: 'sai_auto_equip_from_slots' },
+    effect: { effectId: 'graveyard_auto_equip_by_target_slots' },
   },
   // 深: 最下段（0-1枚）は要:勝敗システム接続
   // 深（シン）
@@ -917,7 +930,7 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
         {
           effectId: 'graveyard_select_equip',
           count: 3,
-          excludeSelf: true,
+          monsterTargetMode: 'exclude_self',
           sourceRestriction: 'just_trashed_by_this_effect',
         },
       ],

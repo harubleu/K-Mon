@@ -197,40 +197,84 @@ export function describeSelectionRequirement(
     }
 
     case 'graveyard_select_recover': {
-      if (effect.count === 'all') return null; // resolveMonsterEffect側で自動解決されるはず
+      if (effect.count === 'all') return null; // resolveMonsterEffect側で自動解決される想定
+      // 【追加・友】墓地の実際の枚数で頭打ちにする(墓地が指定枚数未満でも選択できるように)
+      const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+      const cappedCount = Math.min(effect.count, cemetery.length);
+      if (cappedCount === 0) return null;
       return {
         kind: 'graveyard_select',
         side: ctx.ownerSide,
-        constraint: { min: effect.count, max: effect.count },
+        constraint: { min: cappedCount, max: cappedCount },
         actionLabel: '選択したカードを山札に戻す',
       };
     }
 
     case 'graveyard_select_equip': {
-      // 【追加】excludeSelf対応: 装備先を選べる場合、phase1として装備先モンスター選択を
-      // 先に返す。ctx.equipTargetMonsterIndexが確定済み(phase2)なら通常のgraveyard_selectへ進む。
-      if (effect.excludeSelf && ctx.equipTargetMonsterIndex === undefined) {
+      // 【変更】monsterTargetMode対応: 装備先モンスターを選ばせる場合、phase1として
+      // 装備先モンスター選択を先に返す。'exclude_self'なら発動元を除外、
+      // 'include_self'なら発動元も選択可能(除外指定なし)。
+      // ctx.equipTargetMonsterIndexが確定済み(phase2)なら通常のgraveyard_selectへ進む。
+      if (
+        effect.monsterTargetMode &&
+        ctx.equipTargetMonsterIndex === undefined
+      ) {
         if (ctx.sourceMonsterIndex === undefined) return null;
         return {
           kind: 'monster_select',
           side: ctx.ownerSide,
           constraint: { min: 1, max: 1 },
-          excludeMonsterIndex: ctx.sourceMonsterIndex,
+          excludeMonsterIndex:
+            effect.monsterTargetMode === 'exclude_self'
+              ? ctx.sourceMonsterIndex
+              : undefined,
         };
       }
 
-      // 【追加】sourceRestriction対応: 直前のステップ(sequence内)で実際に墓地送りにした
+      // sourceRestriction対応: 直前のステップ(sequence内)で実際に墓地送りにした
       // カードのみを候補にする(方)。単発発動時はjustTrashedCardIdsがundefinedのため無制限。
-      const cardIdFilter =
+      const restrictionFilter =
         effect.sourceRestriction === 'just_trashed_by_this_effect'
           ? ctx.justTrashedCardIds
           : undefined;
 
+      // 【追加】装備先モンスターの空きスロットに対応する漢字種類でも絞り込む
+      // (同種マナの空きが無いカードはそもそも装備できないため)
+      const targetMonsterIndex =
+        ctx.equipTargetMonsterIndex ?? ctx.sourceMonsterIndex;
+      const targetMonster =
+        targetMonsterIndex !== undefined
+          ? getPlayerState(ctx.gameState, ctx.ownerSide).monsters[
+              targetMonsterIndex
+            ]
+          : undefined;
+      const availableKanji = targetMonster
+        ? Array.from(
+            new Set(
+              targetMonster.slots.filter(
+                (_, i) => targetMonster.equippedMana[i] === null,
+              ),
+            ),
+          )
+        : undefined;
+
+      // 【追加】墓地の実際の対象カード枚数(スロット適合・sourceRestriction込み)で頭打ちにする
+      const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+      const eligibleCount = cemetery.filter((c) => {
+        if (restrictionFilter && !restrictionFilter.includes(c.id))
+          return false;
+        if (availableKanji && !availableKanji.includes(c.kanji)) return false;
+        return true;
+      }).length;
+      const cappedCount = Math.min(effect.count, eligibleCount);
+      if (cappedCount === 0) return null; // 装備できる候補が無ければ効果不発
+
       return {
         kind: 'graveyard_select',
         side: ctx.ownerSide,
-        constraint: { min: effect.count, max: effect.count },
-        cardIdFilter,
+        constraint: { min: cappedCount, max: cappedCount },
+        kanjiFilter: availableKanji,
+        cardIdFilter: restrictionFilter,
         actionLabel: '選択したカードを装備',
       };
     }
@@ -281,6 +325,18 @@ export function describeSelectionRequirement(
         kind: 'monster_select',
         side,
         constraint: { min: effect.count, max: effect.count },
+      };
+    }
+
+    case 'graveyard_auto_equip_by_target_slots': {
+      // 採: 自分のモンスターを1体選ぶ(自分自身は除外)。マナの選定・装備は
+      // buildActionsFromSelection側で完全自動(選択UIを介さない)。
+      if (ctx.sourceMonsterIndex === undefined) return null;
+      return {
+        kind: 'monster_select',
+        side: ctx.ownerSide,
+        constraint: { min: 1, max: 1 },
+        excludeMonsterIndex: ctx.sourceMonsterIndex,
       };
     }
 
@@ -414,6 +470,16 @@ export function describeSelectionRequirement(
       };
     }
 
+    case 'monster_remove_from_game': {
+      // 認・獄: 原文確認済み。対象は常に相手モンスター(全確認例で「あいてのモンスター」)。
+      const side = getOpponentSide(ctx.ownerSide);
+      return {
+        kind: 'monster_select',
+        side,
+        constraint: { min: effect.count, max: effect.count },
+      };
+    }
+
     // ============ 見送り: 現状該当カードが'both'/'choose'のみのため（3章参照） ============
     // 型としてはDeckReorderRequirement.scope: {partialTopCount}を既に用意してあるため、
     // self/opponent固定のカードが増えた際はdeck_full_reorderと同様の実装で対応可能
@@ -437,10 +503,12 @@ export function describeSelectionRequirement(
     case 'deck_keep_rest_trash':
     case 'deck_compare_reduce':
     case 'deck_iterative_reveal_until_condition':
-    case 'monster_remove_from_game':
     case 'draw_and_play_n':
     case 'swap_deck_and_graveyard':
     case 'deck_mark_delayed_reduce':
+    case 'deck_reduce_grant_extra_turn':
+    case 'reveal_both_top_until_shuffle':
+    case 'deck_reduce_scaling_by_activation_count':
       return null;
 
     // ============ sequence / custom ============
@@ -779,6 +847,35 @@ export function buildActionsFromSelection(
       );
     }
 
+    case 'monster_remove_from_game': {
+      // 認・獄: 選択された相手モンスターを、①装備マナを全て墓地へ(TRASH_MANA)
+      // ②isRemovedFromGameを立てる(REMOVE_MONSTER_FROM_GAME)の2Actionずつ組み立てる。
+      // Q&A確認済み：取り除かれた時点で装備マナは墓地行き。既に取り除き済みのモンスターは
+      // 二重処理を避けるためスキップする。
+      if (answer.kind !== 'monster_select') return null;
+      const side = getOpponentSide(ctx.ownerSide);
+      const monsters = getPlayerState(ctx.gameState, side).monsters;
+      const actions: GameAction[] = [];
+      answer.selectedMonsterIndexes.forEach((idx) => {
+        const monster = monsters[idx];
+        if (!monster || monster.isRemovedFromGame) return;
+        actions.push({
+          type: 'TRASH_MANA',
+          payload: {
+            side,
+            monsterIndex: idx,
+            manaCardIds: 'all',
+            destination: 'cemetery',
+          },
+        });
+        actions.push({
+          type: 'REMOVE_MONSTER_FROM_GAME',
+          payload: { side, monsterIndex: idx },
+        });
+      });
+      return actions;
+    }
+
     case 'flip_monster_facedown': {
       if (answer.kind !== 'monster_select') return null;
       const side = resolveSide(effect.targetSide, ctx.ownerSide);
@@ -794,6 +891,47 @@ export function buildActionsFromSelection(
             payload: { side, monsterIndex: idx },
           });
         }
+      });
+      return actions;
+    }
+
+    case 'graveyard_auto_equip_by_target_slots': {
+      // 採: phase1(モンスター選択)確定後、選択UIを介さず完全自動で装備まで組み立てる。
+      // 対象モンスターの空きスロットに対応する漢字種類を重複無しで洗い出し、
+      // 1色につき墓地の先頭1枚をEQUIP_SPECIFIC_MANA(targetSlotIndex省略)で装備する。
+      // 空きスロット判定はここで確定させ、reducer側の寛容なフォールバック(空きが無ければ
+      // 別スロットへ強引に装備等)には委ねない(「空きスロットのみ埋める」という確認済み仕様のため)。
+      if (answer.kind !== 'monster_select') return null;
+      const targetMonsterIndex = answer.selectedMonsterIndexes[0];
+      if (targetMonsterIndex === undefined) return null;
+
+      const playerState = getPlayerState(ctx.gameState, ctx.ownerSide);
+      const targetMonster = playerState.monsters[targetMonsterIndex];
+      if (!targetMonster) return null;
+
+      const requiredKanji = Array.from(
+        new Set(
+          targetMonster.slots.filter(
+            (_, i) => targetMonster.equippedMana[i] === null,
+          ),
+        ),
+      );
+
+      const cemetery = [...playerState.cemetery];
+      const actions: GameAction[] = [];
+      requiredKanji.forEach((kanji) => {
+        const cardIndex = cemetery.findIndex((c) => c.kanji === kanji);
+        if (cardIndex === -1) return; // 墓地に該当色が無ければスキップ(不発)
+        const [card] = cemetery.splice(cardIndex, 1); // 同じ実体を2回使わないよう候補から除去
+        actions.push({
+          type: 'EQUIP_SPECIFIC_MANA',
+          payload: {
+            side: ctx.ownerSide,
+            monsterIndex: targetMonsterIndex,
+            sourceZone: 'cemetery',
+            manaCardId: card.id,
+          },
+        });
       });
       return actions;
     }

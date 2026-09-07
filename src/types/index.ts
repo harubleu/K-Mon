@@ -28,9 +28,12 @@ export type MonsterEffect =
   | {
       effectId: 'graveyard_select_equip';
       count: number;
-      // 【追加】生・方で確認：「このカードにはつけられない」制約
-      excludeSelf?: boolean;
-      // 【追加】方で確認：直前にこの効果で墓地送りにした分のみを対象にする制約
+      // 【変更】excludeSelf(boolean)から統合。装備先モンスターを選ばせる場合の
+      // 除外/包含を1つのフィールドで表現する。
+      // undefined: モンスター選択フェーズ無し。従来通り発動元自身へ自動装備
+      // 'exclude_self': 装備先を選べるが、発動元自身は除外(生・方)
+      // 'include_self': 装備先を選べる。発動元自身も選択可(兄)
+      monsterTargetMode?: 'exclude_self' | 'include_self';
       sourceRestriction?: 'just_trashed_by_this_effect';
     }
   | { effectId: 'deck_select_equip'; count: number }
@@ -222,6 +225,26 @@ export type MonsterEffect =
       revealPosition: number; // 上から何枚目にマークするか(1始まり。忍は3)
       reduceCount: number; // ドロー時に追加で山札から減らす枚数(忍は7)
       destination?: 'cemetery' | 'exile'; // 未指定ならcemetery
+    }
+  // 【追加】電(m00073)で確認：相手の山札を固定数減らした上で、もう一度自分のターンを行う。
+  // 選択を挟まず完全自動解決。ターン進行への介入はGameState.pendingExtraTurn経由で行う。
+  | {
+      effectId: 'deck_reduce_grant_extra_turn';
+      count: number;
+    }
+  // 【追加】明(m00092)で確認：自分・相手両方の山札トップを、シャッフルするまで公開し続ける。
+  // パラメータ不要(常に両陣営が対象、固定)。custom→専用effectIdへ昇格。
+  | { effectId: 'reveal_both_top_until_shuffle' }
+  // 【追加】採(m00115)で確認：自分のモンスターを1体選び(自分自身は除外)、そのモンスターの
+  // 空きスロットに対応する漢字種類を1色につき1枚ずつ、墓地から自動装備する。
+  // パラメータ不要(monsterTargetModeはexclude_self固定、マナの選定は完全自動)。
+  | { effectId: 'graveyard_auto_equip_by_target_slots' }
+  // 【追加】育(m00065)で確認：このモンスターの発動回数(試合を通じて累積)によって
+  // 相手の山札の減少量が変わる。tiersはmaxCount昇順で並べ、最初に条件を満たした
+  // (発動後の累計回数 <= maxCount)ものを採用する。最後の要素で残り全てを受け止める想定。
+  | {
+      effectId: 'deck_reduce_scaling_by_activation_count';
+      tiers: { maxCount: number; reduceCount: number }[];
     };
 
 // --- 永続効果（表向き固定、盤面に残り続けて以後の処理に割り込む） ---
@@ -290,6 +313,15 @@ export type PassiveEffect =
   | {
       trigger: 'own_mana_trashed_by_opponent_reaction';
       selectAndEquipCount: number;
+    }
+  // 【追加】注(m00061)で確認：MonsterEffectのcustomから移設。当初「発動ボタンで起動する
+  // 効果」として登録されていたが、実態は浮・抑・重・扱・返・圧・敵と同種の常時パッシブと判明したため。
+  // 自分のモンスター効果が相手の山札を減らす瞬間に割り込み、その結果を「自分-selfCost・
+  // 相手-opponentCount」の2つに丸ごと置き換える。consumeAfterUseに相当する概念は無く常時発動。
+  | {
+      trigger: 'replace_own_effect_opponent_reduce';
+      selfCost: number;
+      opponentCount: number;
     };
 
 // --- マナカード ---
@@ -319,10 +351,16 @@ export interface MonsterCard {
   reservedCards?: ManaCard[];
   // 認・獄用のゲーム除外状態フラグ
   isRemovedFromGame?: boolean;
+  // 【追加】redirect_own_deck_reduce(consumeAfterUse:true)・block_next_deck_reduce_effect用の
+  // 消費済み管理。passiveEffectが配列の場合のindexに対応する。単体の場合は常にindex 0。
+  consumedPassiveIndexes?: number[];
   // 【追加】masterDataからコピーされる効果データ（generateGameCards内でmaster.idをキーに引いてコピー）
   effect?: MonsterEffect;
   // 【追加】花のように同時に複数の永続効果を持つケースがあるため配列も許容
   passiveEffect?: PassiveEffect | PassiveEffect[];
+  // 【追加・育】発動回数によって結果が変わる効果用のカウンタ。試合内で累積し、
+  // リセットされない。育のexecutor内でのみインクリメントする(汎用フラグではない)。
+  activationCount?: number;
 }
 
 export type LogType = 'draw' | 'mana' | 'attack' | 'system' | 'alert';
@@ -343,6 +381,9 @@ export interface PlayerState {
   exile: ManaCard[];
   monsters: MonsterCard[];
   pendingDrawCards: ManaCard[];
+  // 【追加・明】山札トップを常時公開する効果用のフラグ。プレイヤーごとに独立し、
+  // そのプレイヤー自身がシャッフルした際にのみ解除される。
+  deckTopRevealed?: boolean;
 }
 
 // --- ゲーム全体状態 (Root State)（ターン管理を追加） ---
@@ -354,6 +395,8 @@ export interface GameState {
   currentPhase: GamePhase;
   logs: ActionLog[];
   gameStatus: GameStatus;
+  // 【追加・電】もう一度自分のターンを付与する効果用のフラグ。NEXT_PHASEで消費される。
+  pendingExtraTurn?: boolean;
 }
 
 // --- デッキ構築・プリセット用 ---
@@ -459,6 +502,39 @@ export type SetDeckCardTrapAction = {
   };
 };
 
+// 【追加】redirect_own_deck_reduce(consumeAfterUse:true)・block_next_deck_reduce_effectを
+// 発動後に無効化するためのAction。MonsterCard.consumedPassiveIndexesへpassiveIndexを追記する。
+export type ConsumePassiveEffectAction = {
+  type: 'CONSUME_PASSIVE_EFFECT';
+  payload: { side: PlayerSide; monsterIndex: number; passiveIndex: number };
+};
+
+// 【追加・電】もう一度自分のターンを付与するAction。payload不要(常にgameState.turnPlayer対象)。
+export type GrantExtraTurnAction = {
+  type: 'GRANT_EXTRA_TURN';
+};
+
+// 【追加・明】山札トップの常時公開フラグを切り替えるAction。SHUFFLE_DECKでも
+// 同じ側のフラグをfalseに戻す(effectExecutor.ts側ではなくreducer内で完結させる)。
+export type SetDeckTopRevealedAction = {
+  type: 'SET_DECK_TOP_REVEALED';
+  payload: { side: PlayerSide; revealed: boolean };
+};
+
+// 【追加・育】発動回数カウンタをインクリメントするAction。MonsterCard.activationCountを更新する。
+export type IncrementActivationCountAction = {
+  type: 'INCREMENT_ACTIVATION_COUNT';
+  payload: { side: PlayerSide; monsterIndex: number };
+};
+
+// 【追加・認/獄】モンスターをゲームから取り除くAction。isRemovedFromGameを立てるのみ
+// (配列からは削除しない。isFlippedと同じ「フラグで状態管理」パターンを踏襲)。
+// 装備マナの墓地送りは既存のTRASH_MANA(manaCardIds:'all')を別途dispatchして対応する。
+export type RemoveMonsterFromGameAction = {
+  type: 'REMOVE_MONSTER_FROM_GAME';
+  payload: { side: PlayerSide; monsterIndex: number };
+};
+
 export type GameAction =
   | EquipManaAction
   | TrashManaAction
@@ -472,6 +548,11 @@ export type GameAction =
   | ShuffleDeckAction
   | SetInitialStateAction
   | SetDeckCardTrapAction
+  | ConsumePassiveEffectAction
+  | GrantExtraTurnAction
+  | SetDeckTopRevealedAction
+  | IncrementActivationCountAction
+  | RemoveMonsterFromGameAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }

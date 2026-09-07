@@ -49,25 +49,60 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
         <div
           key={`monster-card-${monster.id}-${index}`}
           style={{
-            border: '2px solid #333',
+            border: monster.isRemovedFromGame
+              ? '2px solid #7f1d1d'
+              : '2px solid #333',
             borderRadius: '8px',
             padding: '8px',
             width: '180px',
-            backgroundColor: monster.isFlipped ? '#e0e0e0' : '#ffffff',
+            backgroundColor: monster.isRemovedFromGame
+              ? '#374151'
+              : monster.isFlipped
+                ? '#e0e0e0'
+                : '#ffffff',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'space-between',
             height: '100%',
+            position: 'relative',
           }}
         >
-          <div style={{ marginBottom: '80px', marginTop: '50px' }}>
+          {/* 【追加・認/獄】ゲームから取り除き済みであることを示すオーバーレイ表示 */}
+          {monster.isRemovedFromGame && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '8px',
+                left: '8px',
+                right: '8px',
+                zIndex: 1,
+                backgroundColor: '#7f1d1d',
+                color: '#fff',
+                fontSize: '0.7rem',
+                fontWeight: 'bold',
+                textAlign: 'center',
+                padding: '4px',
+                borderRadius: '4px',
+              }}
+            >
+              ゲームから取り除き済み
+            </div>
+          )}
+
+          <div
+            style={{
+              marginBottom: '80px',
+              marginTop: '50px',
+              opacity: monster.isRemovedFromGame ? 0.4 : 1,
+            }}
+          >
             <MonsterWithMana
               monster={monster}
               selectedManaIds={selectedManaIds}
               onManaClick={onToggleSelectMana}
               side={side}
               monsterIndex={index}
-              isDroppable={!isDropDisabled}
+              isDroppable={!isDropDisabled && !monster.isRemovedFromGame}
               idPrefix='main_zone'
               hideEmptySlotVisual
             />
@@ -76,7 +111,12 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             <button
               onClick={() => onFlipMonster(side, index)}
-              style={{ fontSize: '0.75rem', padding: '4px', cursor: 'pointer' }}
+              disabled={monster.isRemovedFromGame}
+              style={{
+                fontSize: '0.75rem',
+                padding: '4px',
+                cursor: monster.isRemovedFromGame ? 'not-allowed' : 'pointer',
+              }}
             >
               反転
             </button>
@@ -86,9 +126,14 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
             <button
               onClick={() => onTrashMana(side, index, 'all', 'cemetery')}
               disabled={
+                monster.isRemovedFromGame ||
                 monster.equippedMana.filter((m) => m !== null).length === 0
               }
-              style={{ fontSize: '0.7rem', padding: '4px', cursor: 'pointer' }}
+              style={{
+                fontSize: '0.7rem',
+                padding: '4px',
+                cursor: monster.isRemovedFromGame ? 'not-allowed' : 'pointer',
+              }}
             >
               全マナ破棄(墓地)
             </button>
@@ -96,10 +141,22 @@ export const MonsterZone: React.FC<MonsterZoneProps> = ({
             {/* 【追加】フェーズ5: 発動トリガーUI。effectを持たない、または選択待ち中/未対応の場合は無効化 */}
             <button
               onClick={() => onActivateEffect(side, index)}
-              disabled={!monster.effect || !canActivateEffect(side, index)}
-              style={{ fontSize: '0.7rem', padding: '4px', cursor: 'pointer' }}
+              disabled={
+                monster.isRemovedFromGame ||
+                !monster.effect ||
+                !canActivateEffect(side, index)
+              }
+              style={{
+                fontSize: '0.7rem',
+                padding: '4px',
+                cursor: monster.isRemovedFromGame ? 'not-allowed' : 'pointer',
+              }}
               title={
-                !monster.effect ? '効果を持たないモンスターです' : undefined
+                monster.isRemovedFromGame
+                  ? 'ゲームから取り除かれたモンスターです'
+                  : !monster.effect
+                    ? '効果を持たないモンスターです'
+                    : undefined
               }
             >
               効果発動

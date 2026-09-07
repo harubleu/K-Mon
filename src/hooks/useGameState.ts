@@ -176,6 +176,7 @@ const initialState: GameState = {
   // 追加: ログと勝敗状態
   logs: [],
   gameStatus: 'playing',
+  pendingExtraTurn: false,
 };
 
 // 配列を不変にシャッフルするヘルパー関数 (Fisher-Yates)
@@ -235,6 +236,25 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
             `${getSideLabel('opponent')}の保が発動し、保持していたカードを山札へ戻しました。`,
           ),
         );
+      }
+
+      // 【追加・電】もう一度自分のターンを付与するフラグが立っている場合、ターン交代を
+      // スキップし同じプレイヤーのstartフェーズへ戻す(ドローフェーズ以降は通常通り進行する)。
+      if (stateAfterReserve.pendingExtraTurn) {
+        const extraTurnLogs = [
+          createLog(
+            'system',
+            `${getSideLabel(turnPlayer)}がもう一度ターンを行います。`,
+          ),
+          ...reserveLogs,
+          ...state.logs,
+        ];
+        return {
+          ...stateAfterReserve,
+          currentPhase: 'start',
+          pendingExtraTurn: false,
+          logs: extraTurnLogs,
+        };
       }
 
       // 【追加】決着した場合はターンプレイヤーを切り替えず、ここで停止する
@@ -773,6 +793,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         [side]: {
           ...player,
           deck: shuffleArray(player.deck),
+          // 【追加・明】シャッフルした側の山札トップ公開フラグを解除する
+          deckTopRevealed: false,
         },
         logs: [
           createLog(
@@ -824,6 +846,89 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           ),
           ...state.logs,
         ],
+      };
+    }
+    case 'GRANT_EXTRA_TURN': {
+      return { ...state, pendingExtraTurn: true };
+    }
+
+    case 'CONSUME_PASSIVE_EFFECT': {
+      const { side, monsterIndex, passiveIndex } = action.payload;
+      const player = state[side];
+      const target = player.monsters[monsterIndex];
+      if (!target) return state;
+
+      const updatedMonsters = [...player.monsters];
+      updatedMonsters[monsterIndex] = {
+        ...target,
+        consumedPassiveIndexes: [
+          ...(target.consumedPassiveIndexes ?? []),
+          passiveIndex,
+        ],
+      };
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          monsters: updatedMonsters,
+        },
+      };
+    }
+
+    case 'SET_DECK_TOP_REVEALED': {
+      const { side, revealed } = action.payload;
+      return {
+        ...state,
+        [side]: {
+          ...state[side],
+          deckTopRevealed: revealed,
+        },
+      };
+    }
+
+    case 'INCREMENT_ACTIVATION_COUNT': {
+      const { side, monsterIndex } = action.payload;
+      const player = state[side];
+      const target = player.monsters[monsterIndex];
+      if (!target) return state;
+
+      const updatedMonsters = [...player.monsters];
+      updatedMonsters[monsterIndex] = {
+        ...target,
+        activationCount: (target.activationCount ?? 0) + 1,
+      };
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          monsters: updatedMonsters,
+        },
+      };
+    }
+
+    case 'REMOVE_MONSTER_FROM_GAME': {
+      const { side, monsterIndex } = action.payload;
+      const player = state[side];
+      const target = player.monsters[monsterIndex];
+      if (!target) return state;
+
+      const updatedMonsters = [...player.monsters];
+      updatedMonsters[monsterIndex] = {
+        ...target,
+        isRemovedFromGame: true,
+      };
+
+      const logMsg = `${getSideLabel(side)}の「${target.name || `モンスター${monsterIndex + 1}`}」がゲームから取り除かれました。`;
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          monsters: updatedMonsters,
+        },
+        logs: [createLog('system', logMsg), ...state.logs],
       };
     }
 

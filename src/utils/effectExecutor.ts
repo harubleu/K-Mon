@@ -130,6 +130,299 @@ export function resolveRevealCheckActions(
   return actions;
 }
 
+// 【追加・永続パッシブ割り込みパイプライン(グループ1: mitigate/boost/block/redirect)】
+//
+// 対象: mitigate_deck_reduce_effect(浮)・boost_own_deck_reduce_effect(重・m00074)・
+// block_next_deck_reduce_effect(抑)・redirect_own_deck_reduce(扱・返・圧・敵)。
+//
+// 設計方針: resolveMonsterEffect/buildActionsFromSelectionが返すActionを個別に書き換えるのではなく、
+// dispatch直前(useEffectExecutor.ts側)で一括ラップする(案A)。既存30種類超のeffectIdケースには
+// 一切手を入れない。山札減少は DAMAGE と MOVE_CARD_BETWEEN_ZONES(deck→自陣cemetery/exile) の
+// 2種類のActionで表現されているため、両方から共通の意図(DeckReduceIntent)を抽出して処理する。
+//
+// 適用順序: ①boost(発動元自身の加算) → ②redirect(自分の山札が減る効果のみ対象) →
+// ③mitigate(実際に減る側の軽減) → ④block(実際に減る側の全ブロック)。
+// 浮のFAQ「浮を先に発動させた場合、注は発動できない」は、③の結果amountが0になることで、
+// 後続の注(replace_own_effect_opponent_reduce、別タスク)の発動条件が自然に満たされなくなる形で再現される。
+
+interface DeckReduceIntent {
+  targetSide: PlayerSide;
+  amount: number;
+  destination: 'cemetery' | 'exile';
+}
+
+// passiveEffectは単体/配列どちらもあり得るため配列に正規化する
+function getPassiveList(monster: MonsterCard): PassiveEffect[] {
+  if (!monster.passiveEffect) return [];
+  return Array.isArray(monster.passiveEffect)
+    ? monster.passiveEffect
+    : [monster.passiveEffect];
+}
+
+function isPassiveConsumed(
+  monster: MonsterCard,
+  passiveIndex: number,
+): boolean {
+  return monster.consumedPassiveIndexes?.includes(passiveIndex) ?? false;
+}
+
+// boost_own_deck_reduce_effect: 発動元自身の所有モンスターの加算値を合算する。
+// scopeが指定されている場合、'deck'を含まないスコープ(monster_mana限定等)は対象外
+// (現時点ではdeck起点の減少のみを扱うため。monster_mana側の対応は別タスク)。
+function sumBoostAmount(gameState: GameState, actingSide: PlayerSide): number {
+  const monsters = getPlayerState(gameState, actingSide).monsters;
+  let total = 0;
+  monsters.forEach((monster) => {
+    getPassiveList(monster).forEach((passive) => {
+      if (passive.trigger !== 'boost_own_deck_reduce_effect') return;
+      if (passive.scope && !passive.scope.includes('deck')) return;
+      total += passive.extraCount;
+    });
+  });
+  return total;
+}
+
+// mitigate_deck_reduce_effect: 実際に減少を受ける側(targetSide)の所有モンスターの軽減値を合算する。
+// 浮のFAQ通り、発動元が自分/相手のどちらであっても適用対象になる(sideを問わない)。
+function sumMitigateAmount(
+  gameState: GameState,
+  targetSide: PlayerSide,
+): number {
+  const monsters = getPlayerState(gameState, targetSide).monsters;
+  let total = 0;
+  monsters.forEach((monster) => {
+    getPassiveList(monster).forEach((passive) => {
+      if (passive.trigger === 'mitigate_deck_reduce_effect')
+        total += passive.amount;
+    });
+  });
+  return total;
+}
+
+interface RedirectMatch {
+  monsterIndex: number;
+  passiveIndex: number;
+  fixedCount?: number;
+  consumeAfterUse: boolean;
+}
+
+// redirect_own_deck_reduce: 「自分の効果で自分の山札が減る」場合のみ対象(呼び出し側でtargetSide===actingSideを確認済み)。
+// fixedCount指定は常に適用。minCount/maxCount指定は元のamountがその範囲内の場合のみ適用し、
+// 適用時はamountをそのまま(同数)相手へ転嫁する(敵のケース)。未消費のものを先頭から1件だけ採用する。
+function findApplicableRedirect(
+  gameState: GameState,
+  actingSide: PlayerSide,
+  amount: number,
+): RedirectMatch | null {
+  const monsters = getPlayerState(gameState, actingSide).monsters;
+  for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
+    const monster = monsters[monsterIndex];
+    const passives = getPassiveList(monster);
+    for (let passiveIndex = 0; passiveIndex < passives.length; passiveIndex++) {
+      const passive = passives[passiveIndex];
+      if (passive.trigger !== 'redirect_own_deck_reduce') continue;
+      if (isPassiveConsumed(monster, passiveIndex)) continue;
+      const { minCount, maxCount, fixedCount } = passive.scope;
+      const inRange =
+        fixedCount !== undefined ||
+        ((minCount === undefined || amount >= minCount) &&
+          (maxCount === undefined || amount <= maxCount));
+      if (!inRange) continue;
+      return {
+        monsterIndex,
+        passiveIndex,
+        fixedCount,
+        consumeAfterUse: passive.consumeAfterUse,
+      };
+    }
+  }
+  return null;
+}
+
+interface BlockMatch {
+  monsterIndex: number;
+  passiveIndex: number;
+}
+
+// block_next_deck_reduce_effect: 実際に減少を受ける側(targetSide)の未消費の1件を採用し、amountを0にする。
+// 「次の1回」を意味する効果のため、常に1回発動で消費済み扱いにする(フィールドにconsumeAfterUseは
+// 存在しないが、トリガー名自体が一度きりを意味するため無条件で消費対象とする)。
+function findApplicableBlock(
+  gameState: GameState,
+  targetSide: PlayerSide,
+): BlockMatch | null {
+  const monsters = getPlayerState(gameState, targetSide).monsters;
+  for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
+    const monster = monsters[monsterIndex];
+    const passives = getPassiveList(monster);
+    for (let passiveIndex = 0; passiveIndex < passives.length; passiveIndex++) {
+      if (passives[passiveIndex].trigger !== 'block_next_deck_reduce_effect')
+        continue;
+      if (isPassiveConsumed(monster, passiveIndex)) continue;
+      return { monsterIndex, passiveIndex };
+    }
+  }
+  return null;
+}
+
+interface ReplaceMatch {
+  selfCost: number;
+  opponentCount: number;
+}
+
+// replace_own_effect_opponent_reduce（注）: 発動元(actingSide)自身が持つ場合、
+// 「自分の効果が相手の山札を減らす」という結果を丸ごと「自分-selfCost・相手-opponentCount」へ置換する。
+// consumeAfterUseに相当する概念が無いため常時発動対象(未消費管理は不要)。複数所持していても
+// 先頭の1件のみ採用する(重複適用は原文に記載が無いため対象外)。
+function findApplicableReplace(
+  gameState: GameState,
+  actingSide: PlayerSide,
+): ReplaceMatch | null {
+  const monsters = getPlayerState(gameState, actingSide).monsters;
+  for (const monster of monsters) {
+    for (const passive of getPassiveList(monster)) {
+      if (passive.trigger === 'replace_own_effect_opponent_reduce') {
+        return {
+          selfCost: passive.selfCost,
+          opponentCount: passive.opponentCount,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// DAMAGE、または「山札→自陣cemetery/exile」を表すMOVE_CARD_BETWEEN_ZONESから
+// 共通の意図(DeckReduceIntent)を抽出する。対象外のActionはnullを返しそのまま素通りさせる。
+function extractDeckReduceIntent(action: GameAction): DeckReduceIntent | null {
+  if (action.type === 'DAMAGE') {
+    const targetSide = action.payload.targetSide ?? action.payload.side;
+    if (!targetSide) return null;
+    return {
+      targetSide,
+      amount: action.payload.amount,
+      destination: 'cemetery',
+    };
+  }
+  if (
+    action.type === 'MOVE_CARD_BETWEEN_ZONES' &&
+    action.payload.sourceZone === 'deck' &&
+    action.payload.sourceSide === action.payload.targetSide &&
+    (action.payload.targetZone === 'cemetery' ||
+      action.payload.targetZone === 'exile')
+  ) {
+    return {
+      targetSide: action.payload.targetSide,
+      amount: action.payload.cardIds.length,
+      destination: action.payload.targetZone,
+    };
+  }
+  return null;
+}
+
+// 書き換え後のDeckReduceIntentから、MOVE_CARD_BETWEEN_ZONES Actionを再構築する。
+// amountが0以下、または対象の山札が既に0枚ならAction自体を発生させない(null)。
+function buildDeckReduceAction(
+  gameState: GameState,
+  intent: DeckReduceIntent,
+): GameAction | null {
+  if (intent.amount <= 0) return null;
+  const cardIds = takeTopDeckIds(gameState, intent.targetSide, intent.amount);
+  if (cardIds.length === 0) return null;
+  return {
+    type: 'MOVE_CARD_BETWEEN_ZONES',
+    payload: {
+      sourceSide: intent.targetSide,
+      targetSide: intent.targetSide,
+      cardIds,
+      sourceZone: 'deck',
+      targetZone: intent.destination,
+    },
+  };
+}
+
+// 効果解決で組み立てられたActions配列を、dispatch直前にこの関数へ通すことで
+// mitigate/boost/block/redirectの4トリガーを適用する。山札減少を表さないActionはそのまま通す。
+export function applyDeckReducePassives(
+  actions: GameAction[],
+  actingSide: PlayerSide,
+  gameState: GameState,
+): GameAction[] {
+  const result: GameAction[] = [];
+  const consumptions: GameAction[] = [];
+
+  for (const action of actions) {
+    const intent = extractDeckReduceIntent(action);
+    if (!intent) {
+      result.push(action);
+      continue;
+    }
+
+    let targetSide = intent.targetSide;
+    let amount = intent.amount + sumBoostAmount(gameState, actingSide);
+
+    if (targetSide === actingSide) {
+      const redirect = findApplicableRedirect(gameState, actingSide, amount);
+      if (redirect) {
+        amount = redirect.fixedCount ?? amount;
+        targetSide = getOpponentSide(actingSide);
+        if (redirect.consumeAfterUse) {
+          consumptions.push({
+            type: 'CONSUME_PASSIVE_EFFECT',
+            payload: {
+              side: actingSide,
+              monsterIndex: redirect.monsterIndex,
+              passiveIndex: redirect.passiveIndex,
+            },
+          });
+        }
+      }
+    }
+
+    amount = Math.max(0, amount - sumMitigateAmount(gameState, targetSide));
+
+    if (amount > 0) {
+      const block = findApplicableBlock(gameState, targetSide);
+      if (block) {
+        amount = 0;
+        consumptions.push({
+          type: 'CONSUME_PASSIVE_EFFECT',
+          payload: {
+            side: targetSide,
+            monsterIndex: block.monsterIndex,
+            passiveIndex: block.passiveIndex,
+          },
+        });
+      }
+    }
+
+    // 【追加・注】ここまでの結果、相手側の山札が実際に減る状態が残っている場合のみ判定する。
+    // 浮のmitigateや抑のblockで既に0になっていれば、この時点でamount<=0のため発動しない
+    // (FAQ「浮を先に発動させた場合、注は発動できない」を自然に再現)。
+    if (amount > 0 && targetSide === getOpponentSide(actingSide)) {
+      const replace = findApplicableReplace(gameState, actingSide);
+      if (replace) {
+        const selfAction = buildDeckReduceAction(gameState, {
+          targetSide: actingSide,
+          amount: replace.selfCost,
+          destination: intent.destination,
+        });
+        if (selfAction) result.push(selfAction);
+        amount = replace.opponentCount;
+      }
+    }
+
+    const rebuilt = buildDeckReduceAction(gameState, {
+      targetSide,
+      amount,
+      destination: intent.destination,
+    });
+    if (rebuilt) result.push(rebuilt);
+  }
+
+  return [...result, ...consumptions];
+}
+
 // 【追加・own_turn_startパイプライン】「効果発動」ボタンが実際にどのMonsterEffectを対象とすべきかを
 // 判定する。自分の(ownerSideが手番の)startフェーズ中は、passiveEffectのown_turn_startトリガーを
 // monster.effectより優先する。それ以外は従来通りmonster.effect。
@@ -208,6 +501,78 @@ export function resolveMonsterEffect(
           },
         },
       ];
+    }
+
+    case 'deck_reduce_scaling_by_activation_count': {
+      // 育: このモンスター自身の発動回数(試合内で累積)によって相手の山札の減少量が変わる。
+      // 選択不要のため完全自動解決。sourceMonsterIndexが無ければ判定できないためnull。
+      if (ctx.sourceMonsterIndex === undefined) return null;
+      const monster = getPlayerState(gameState, ownerSide).monsters[
+        ctx.sourceMonsterIndex
+      ];
+      if (!monster) return null;
+
+      const newCount = (monster.activationCount ?? 0) + 1;
+      const tier =
+        effect.tiers.find((t) => newCount <= t.maxCount) ??
+        effect.tiers[effect.tiers.length - 1];
+      if (!tier) return null;
+
+      const cardIds = takeTopDeckIds(gameState, opponentSide, tier.reduceCount);
+      const actions: GameAction[] = [];
+      if (cardIds.length > 0) {
+        actions.push({
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: opponentSide,
+            targetSide: opponentSide,
+            cardIds,
+            sourceZone: 'deck',
+            targetZone: 'cemetery',
+          },
+        });
+      }
+      actions.push({
+        type: 'INCREMENT_ACTIVATION_COUNT',
+        payload: { side: ownerSide, monsterIndex: ctx.sourceMonsterIndex },
+      });
+      return actions;
+    }
+
+    case 'reveal_both_top_until_shuffle': {
+      // 明: 自分・相手両方の山札トップをシャッフルまで公開し続ける。選択不要のため完全自動解決。
+      // 既にどちらか/両方が公開済みでも、再発動は無害(reducer側は単純にtrueを立て直すだけ)。
+      return [
+        {
+          type: 'SET_DECK_TOP_REVEALED',
+          payload: { side: ownerSide, revealed: true },
+        },
+        {
+          type: 'SET_DECK_TOP_REVEALED',
+          payload: { side: opponentSide, revealed: true },
+        },
+      ];
+    }
+
+    case 'deck_reduce_grant_extra_turn': {
+      // 電: 相手の山札を固定数減らし、もう一度自分のターンを行う。選択不要のため完全自動解決。
+      // 2つ目のActionでpendingExtraTurnを立て、NEXT_PHASE側でターン交代をスキップする。
+      const cardIds = takeTopDeckIds(gameState, opponentSide, effect.count);
+      const actions: GameAction[] = [];
+      if (cardIds.length > 0) {
+        actions.push({
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: opponentSide,
+            targetSide: opponentSide,
+            cardIds,
+            sourceZone: 'deck',
+            targetZone: 'cemetery',
+          },
+        });
+      }
+      actions.push({ type: 'GRANT_EXTRA_TURN' });
+      return actions;
     }
 
     case 'trash_monster_mana': {
@@ -551,6 +916,7 @@ export function resolveMonsterEffect(
     case 'select_zone_move_one':
     case 'flip_monster_facedown':
     case 'swap_equipped_with_graveyard':
+    case 'graveyard_auto_equip_by_target_slots':
     case 'custom':
       return null;
 
