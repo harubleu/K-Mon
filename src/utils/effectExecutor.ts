@@ -375,6 +375,13 @@ export function applyDeckReducePassives(
               passiveIndex: redirect.passiveIndex,
             },
           });
+          // 【追加】扱・返・圧の原文「このカードをうらむきにもどす」対応。
+          // これらは表向き固定(isFlipped:false)の永続カードのため、1回消費時に
+          // FLIP_MONSTER(トグル)を1回発火させれば裏面(isFlipped:true)に切り替わる。
+          consumptions.push({
+            type: 'FLIP_MONSTER',
+            payload: { side: actingSide, monsterIndex: redirect.monsterIndex },
+          });
         }
       }
     }
@@ -392,6 +399,12 @@ export function applyDeckReducePassives(
             monsterIndex: block.monsterIndex,
             passiveIndex: block.passiveIndex,
           },
+        });
+        // 【追加】抑の原文「このカードを、うらむきにもどす」対応。redirectと同じくFLIP_MONSTER
+        // (トグル)を1回発火させる。
+        consumptions.push({
+          type: 'FLIP_MONSTER',
+          payload: { side: targetSide, monsterIndex: block.monsterIndex },
         });
       }
     }
