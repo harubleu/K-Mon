@@ -436,6 +436,168 @@ export function applyDeckReducePassives(
   return [...result, ...consumptions];
 }
 
+// 【追加・永続パッシブ割り込みパイプライン(グループ2: TRASH_MANA対応)】
+//
+// 対象: shield_counter_deck_protection(囲)・negate_own_mana_trash_by_opponent(吸)。
+// applyDeckReducePassivesとは別関数とする(対象Actionの種類が異なるため)。
+// 山札減少(DAMAGE/MOVE_CARD_BETWEEN_ZONES)ではなくTRASH_MANA(装備マナの破棄)のみを対象とする。
+//
+// 適用対象: 「相手の効果による」TRASH_MANAのみ(actingSide !== 対象マナの所有側の場合)。
+// 手動操作(全マナ破棄ボタン等)・認/獄の随伴処理(REMOVE_MONSTER_FROM_GAMEに伴うTRASH_MANA)は
+// 呼び出し側(useEffectExecutor.ts)で「効果解決経由のdispatchのみ」に絞ることで対象外とする。
+//
+// 適用順序: ①囲(shield_counter_deck_protection、reservedCards 1枚消費で全量ブロック)
+// → ②吸(negate_own_mana_trash_by_opponent、無条件で全量無効化)
+// → ③拾(own_mana_trashed_by_opponent_reaction)の発動条件検知(ブロックも無効化もされなかった場合のみ)。
+// 抑の優先順位(抑＞囲、7.3章5番の暫定案)は山札減少専用のためこのパイプラインには影響しない。
+//
+// 【設計注記】戻り値をGameAction[]ではなく{actions, pickupTrigger?}に拡張している。
+// 純粋関数であるこの層から、状態を持つuseEffectExecutor.ts側へ「拾の発動条件が成立したこと」を
+// 伝える必要があるため(applyDeckReducePassivesのような単純な書き換えだけでは完結しない)。
+
+interface ShieldMatch {
+  monsterIndex: number;
+  bufferCardId: string; // 消費するreservedCardsの1枚
+}
+
+// shield_counter_deck_protection: 対象側(targetSide、TRASH_MANAでマナを失う側)の
+// reservedCardsが1枚以上残っている未消費のものを先頭から1件採用する。
+function findApplicableShield(
+  gameState: GameState,
+  targetSide: PlayerSide,
+): ShieldMatch | null {
+  const monsters = getPlayerState(gameState, targetSide).monsters;
+  for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
+    const monster = monsters[monsterIndex];
+    const hasShieldPassive = getPassiveList(monster).some(
+      (p) => p.trigger === 'shield_counter_deck_protection',
+    );
+    if (!hasShieldPassive) continue;
+    const buffer = monster.reservedCards ?? [];
+    if (buffer.length === 0) continue;
+    return { monsterIndex, bufferCardId: buffer[0].id };
+  }
+  return null;
+}
+
+// negate_own_mana_trash_by_opponent: 対象側(targetSide)が持つ未消費のものを1件採用する。
+// consumeAfterUse相当の概念が無いため常時発動(毎回同じモンスターが対象になり得る)。
+function hasApplicableNegate(
+  gameState: GameState,
+  targetSide: PlayerSide,
+): boolean {
+  const monsters = getPlayerState(gameState, targetSide).monsters;
+  return monsters.some((monster) =>
+    getPassiveList(monster).some(
+      (p) => p.trigger === 'negate_own_mana_trash_by_opponent',
+    ),
+  );
+}
+
+export interface ManaTrashPassiveResult {
+  actions: GameAction[];
+  // 【追加・拾】相手の効果によるTRASH_MANAが吸で無効化されず実際に発生した場合、
+  // 拾を持つモンスターがあればその発動トリガー情報を載せる。呼び出し側(useEffectExecutor.ts)が
+  // これを見てpendingSelectionへpickup_select要求を追加する。
+  pickupTrigger?: {
+    side: PlayerSide;
+    monsterIndex: number;
+    trashedCards: ManaCard[];
+  };
+}
+
+// dispatch直前にTRASH_MANA Actionをこの関数へ通すことで、囲・吸の2トリガーを適用し、
+// 拾の発動条件成立を検知する。TRASH_MANAを表さないActionはそのまま通す。
+// actingSideは効果の発動者、対象マナの所有側との比較で「相手の効果によるTRASH_MANAか」を判定する
+// (自分自身の効果によるTRASH_MANAは対象外)。
+export function applyManaTrashPassives(
+  actions: GameAction[],
+  actingSide: PlayerSide,
+  gameState: GameState,
+): ManaTrashPassiveResult {
+  const result: GameAction[] = [];
+  const consumptions: GameAction[] = [];
+  let pickupTrigger: ManaTrashPassiveResult['pickupTrigger'];
+
+  for (const action of actions) {
+    if (action.type !== 'TRASH_MANA') {
+      result.push(action);
+      continue;
+    }
+
+    const targetSide = action.payload.side;
+    // 自分自身の効果による自分のTRASH_MANAは対象外(囲・吸とも「あいての効果」限定のため)
+    if (targetSide === actingSide) {
+      result.push(action);
+      continue;
+    }
+
+    const shield = findApplicableShield(gameState, targetSide);
+    if (shield) {
+      // reservedCardsから1枚消費して全量ブロックする。バッファが尽きたら裏向きに戻す。
+      const monster = getPlayerState(gameState, targetSide).monsters[
+        shield.monsterIndex
+      ];
+      const remainingBuffer = (monster.reservedCards ?? []).filter(
+        (c) => c.id !== shield.bufferCardId,
+      );
+      consumptions.push({
+        type: 'CONSUME_RESERVED_CARD',
+        payload: {
+          side: targetSide,
+          monsterIndex: shield.monsterIndex,
+          cardId: shield.bufferCardId,
+        },
+      });
+      if (remainingBuffer.length === 0) {
+        consumptions.push({
+          type: 'FLIP_MONSTER',
+          payload: { side: targetSide, monsterIndex: shield.monsterIndex },
+        });
+      }
+      continue; // このTRASH_MANA自体は発生させない(ブロック)
+    }
+
+    if (hasApplicableNegate(gameState, targetSide)) {
+      continue; // 吸: 無条件で無効化(このTRASH_MANA自体を発生させない)
+    }
+
+    // 【追加・拾】ブロックも無効化もされなかった＝実際にTRASH_MANAが発生する。
+    // targetSide側に拾を持つモンスターがいれば、実際に墓地送りになるカードの実体を控えておく。
+    const pickupMonsterIndex = getPlayerState(
+      gameState,
+      targetSide,
+    ).monsters.findIndex((monster) =>
+      getPassiveList(monster).some(
+        (p) => p.trigger === 'own_mana_trashed_by_opponent_reaction',
+      ),
+    );
+    if (pickupMonsterIndex !== -1 && !pickupTrigger) {
+      const targetMonster = getPlayerState(gameState, targetSide).monsters[
+        action.payload.monsterIndex
+      ];
+      const trashedCards =
+        action.payload.manaCardIds === 'all'
+          ? targetMonster.equippedMana.filter((m): m is ManaCard => m !== null)
+          : targetMonster.equippedMana.filter(
+              (m): m is ManaCard =>
+                m !== null && action.payload.manaCardIds.includes(m.id),
+            );
+      if (trashedCards.length > 0) {
+        pickupTrigger = {
+          side: targetSide,
+          monsterIndex: pickupMonsterIndex,
+          trashedCards,
+        };
+      }
+    }
+
+    result.push(action);
+  }
+
+  return { actions: [...result, ...consumptions], pickupTrigger };
+}
+
 // 【追加・own_turn_startパイプライン】「効果発動」ボタンが実際にどのMonsterEffectを対象とすべきかを
 // 判定する。自分の(ownerSideが手番の)startフェーズ中は、passiveEffectのown_turn_startトリガーを
 // monster.effectより優先する。それ以外は従来通りmonster.effect。
@@ -930,6 +1092,7 @@ export function resolveMonsterEffect(
     case 'flip_monster_facedown':
     case 'swap_equipped_with_graveyard':
     case 'graveyard_auto_equip_by_target_slots':
+    case 'graveyard_partial_to_reserve': // 選択要のためeffectSelection.ts側で対応
     case 'custom':
       return null;
 

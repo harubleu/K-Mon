@@ -715,13 +715,22 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     }
 
     case 'MOVE_CARD_TO_RESERVE': {
-      const { side, monsterIndex, cardIds } = action.payload;
+      // 【変更・囲】sourceZoneを追加(未指定時は'deck'扱い、保の既存呼び出し箇所との後方互換)。
+      // 保(山札由来)・囲(墓地由来)の両方に対応する。
+      const {
+        side,
+        monsterIndex,
+        cardIds,
+        sourceZone = 'deck',
+      } = action.payload;
       const player = state[side];
       const monster = player.monsters[monsterIndex];
       if (!monster) return state;
 
+      const sourceList =
+        sourceZone === 'cemetery' ? player.cemetery : player.deck;
       const movingCards: ManaCard[] = [];
-      const remainingDeck = player.deck.filter((c) => {
+      const remainingSourceList = sourceList.filter((c) => {
         if (cardIds.includes(c.id)) {
           movingCards.push(c);
           return false;
@@ -743,13 +752,13 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ...state,
         [side]: {
           ...player,
-          deck: remainingDeck,
+          [sourceZone]: remainingSourceList,
           monsters: updatedMonsters,
         },
         logs: [
           createLog(
             'system',
-            `${getSideLabel(side)}の「${monster.name || `モンスター${monsterIndex + 1}`}」が山札から ${movingCards.length} 枚を保持しました。`,
+            `${getSideLabel(side)}の「${monster.name || `モンスター${monsterIndex + 1}`}」が${sourceZone === 'cemetery' ? '墓地' : '山札'}から ${movingCards.length} 枚を保持しました。`,
           ),
           ...state.logs,
         ],
@@ -929,6 +938,56 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           monsters: updatedMonsters,
         },
         logs: [createLog('system', logMsg), ...state.logs],
+      };
+    }
+
+    case 'CONSUME_RESERVED_CARD': {
+      const { side, monsterIndex, cardId } = action.payload;
+      const player = state[side];
+      const target = player.monsters[monsterIndex];
+      if (!target) return state;
+
+      const buffer = target.reservedCards ?? [];
+      const consumedCard = buffer.find((c) => c.id === cardId);
+      if (!consumedCard) return state;
+
+      const updatedMonsters = [...player.monsters];
+      updatedMonsters[monsterIndex] = {
+        ...target,
+        reservedCards: buffer.filter((c) => c.id !== cardId),
+      };
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          monsters: updatedMonsters,
+          cemetery: [...player.cemetery, consumedCard],
+        },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の「${target.name || `モンスター${monsterIndex + 1}`}」が囲のバッファを1枚消費し、墓地へ送りました。`,
+          ),
+          ...state.logs,
+        ],
+      };
+    }
+
+    case 'FORCE_END_OPPONENT_TURN': {
+      const { side } = action.payload;
+      return {
+        ...state,
+        turnPlayer: side,
+        turnCount: state.turnCount + 1,
+        currentPhase: 'start',
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の拾が発動し、相手のターンを打ち切って自分のターンを開始しました。`,
+          ),
+          ...state.logs,
+        ],
       };
     }
 

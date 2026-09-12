@@ -15,12 +15,21 @@
 // 各ステップの確定は即dispatchする(案A)。既存のpendingSelection.requirement.kind単位の
 // UIルーティング(App.tsx/PlayerZone.tsx)は無改修で、ステップが切り替わるたびに
 // pendingSelectionのrequirementが自動的に差し替わり、対応するモーダルへ遷移する。
+//
+// 【追加・永続パッシブ割り込みパイプライン グループ1+2の統一配線】dispatch直前の全箇所で
+// dispatchWithPassivesヘルパーを経由する。①山札減少パイプライン(applyDeckReducePassives)
+// →②TRASH_MANAパイプライン(applyManaTrashPassives)の順に通す。②がpickupTrigger(拾の発動条件
+// 成立)を検知した場合、通常のActionをdispatchした後に拾のphase1(装備先モンスター選択)を
+// pendingSelectionとしてセットする。sequence実行中に拾が割り込んだ場合は、残りステップを
+// pickupResumeContextへ保存し、拾の確定後にtrySequenceFromで自動復帰する。
 
 import { useState } from 'react';
 import {
   resolveMonsterEffect,
   getOpponentSide,
   getPlayerState,
+  applyDeckReducePassives,
+  applyManaTrashPassives,
 } from '../utils/effectExecutor';
 import {
   describeSelectionRequirement,
@@ -51,6 +60,19 @@ export interface PendingSelection {
   // 【追加・生方のexcludeSelf対応】phase2(graveyard_select)確定時にbuildActionsFromSelectionへ
   // 渡す装備先モンスターのindex。phase1(monster_select)確定時にセットされる。
   equipTargetMonsterIndex?: number;
+  // 【追加・拾】このpendingSelectionが拾の割り込み反応であることを示すフラグ。
+  // trueの場合、effectフィールドはダミー値(実際には参照されない)で、
+  // confirmSelection側で専用分岐として処理する。
+  isPickupReaction?: boolean;
+  // 【追加・拾】phase1(装備先モンスター選択)確定後にphase2(pickup_select)へ渡す候補カード一覧。
+  pickupCandidateCards?: { id: string; kanji: string; reading: string }[];
+  // 【追加・拾】sequence実行中に拾が割り込んだ場合の復帰情報。
+  pickupResumeContext?: {
+    remainingSteps: MonsterEffect[];
+    justTrashedCardIds?: string[];
+    originalOwnerSide: PlayerSide;
+    originalSourceMonsterIndex?: number;
+  };
 }
 
 // dispatch済みのGameAction群から、「墓地へ送られたカードID」を抽出する。
@@ -126,10 +148,66 @@ export const useEffectExecutor = (
     return describeSelectionRequirement(effect, ctx) !== null;
   };
 
+  // 【追加・囲/拾統合ヘルパー】山札減少パイプライン→TRASH_MANAパイプラインの順に通し、
+  // dispatchする。pickupTriggerが得られた場合、通常のdispatch後にpendingSelectionとして
+  // phase1(装備先モンスター選択)をセットする(拾自身の選択フローを開始する)。
+  // resumeContext: 拾の割り込み元がsequence実行中だった場合、その残りステップと発動元情報を
+  // 保持しておき、拾のphase1→phase2確定後にtrySequenceFromで自動的に元のsequenceへ
+  // 復帰できるようにする。
+  // 戻り値: このヘルパーがpendingSelectionをセットしたかどうか(true = 呼び出し元は
+  // 追加でsetPendingSelection(null)しないよう注意する)。
+  const dispatchWithPassives = (
+    actions: GameAction[],
+    actingSide: PlayerSide,
+    resumeContext?: {
+      remainingSteps: MonsterEffect[];
+      justTrashedCardIds?: string[];
+      sourceMonsterIndex?: number;
+    },
+  ): boolean => {
+    const deckReduced = applyDeckReducePassives(actions, actingSide, gameState);
+    const { actions: finalActions, pickupTrigger } = applyManaTrashPassives(
+      deckReduced,
+      actingSide,
+      gameState,
+    );
+    finalActions.forEach((action) => dispatch(action));
+
+    if (pickupTrigger) {
+      setPendingSelection({
+        requirement: {
+          kind: 'monster_select',
+          side: pickupTrigger.side,
+          constraint: { min: 1, max: 1 },
+        },
+        effect: { effectId: 'custom', handlerKey: 'pickup_reaction_phase1' }, // ダミー(参照されない)
+        ownerSide: pickupTrigger.side,
+        isPickupReaction: true,
+        pickupCandidateCards: pickupTrigger.trashedCards.map((c) => ({
+          id: c.id,
+          kanji: c.kanji,
+          reading: c.reading,
+        })),
+        pickupResumeContext: resumeContext
+          ? {
+              remainingSteps: resumeContext.remainingSteps,
+              justTrashedCardIds: resumeContext.justTrashedCardIds,
+              originalOwnerSide: actingSide,
+              originalSourceMonsterIndex: resumeContext.sourceMonsterIndex,
+            }
+          : undefined,
+      });
+      return true;
+    }
+    return false;
+  };
+
   // 【追加】sequenceのステップを先頭から順に試す。
   // - 自動解決できるステップは即dispatchして次のステップへ進む(再帰)
   // - 選択が必要なステップに当たったらpendingSelectionをセットして停止
   // - どちらも対応できないステップに当たったら、sequence全体を打ち切る(false)
+  // - 【追加・拾】自動解決ステップのdispatch時に拾が割り込んだ場合、sequenceは一旦停止する
+  //   (拾の確定後、pickupResumeContext経由でtrySequenceFromへ自動復帰する)。
   const trySequenceFrom = (
     steps: MonsterEffect[],
     ownerSide: PlayerSide,
@@ -151,7 +229,12 @@ export const useEffectExecutor = (
 
     const actions = resolveMonsterEffect(currentStep, ctx);
     if (actions !== null) {
-      actions.forEach((action) => dispatch(action));
+      const pickupStarted = dispatchWithPassives(actions, ownerSide, {
+        remainingSteps: rest,
+        justTrashedCardIds,
+        sourceMonsterIndex,
+      });
+      if (pickupStarted) return true; // 拾が割り込んだ場合、sequenceは一旦停止(拾確定後に復帰)
       const trashedIds = extractTrashedCardIds(actions);
       return trySequenceFrom(rest, ownerSide, sourceMonsterIndex, trashedIds);
     }
@@ -189,8 +272,8 @@ export const useEffectExecutor = (
 
     const actions = resolveMonsterEffect(effect, ctx);
     if (actions !== null) {
-      actions.forEach((action) => dispatch(action));
-      setPendingSelection(null);
+      const pickupStarted = dispatchWithPassives(actions, ownerSide);
+      if (!pickupStarted) setPendingSelection(null);
       return true;
     }
 
@@ -253,6 +336,64 @@ export const useEffectExecutor = (
 
   const confirmSelection = (answer: EffectSelectionAnswer) => {
     if (!pendingSelection) return;
+
+    // 【追加・拾】phase1(装備先モンスター選択)確定時: まだActionを組み立てず、
+    // 選ばれたモンスターのindexを載せてphase2(拾われたカードからの選択)へ進む。
+    if (
+      pendingSelection.isPickupReaction &&
+      pendingSelection.requirement.kind === 'monster_select' &&
+      answer.kind === 'monster_select'
+    ) {
+      const equipTargetMonsterIndex = answer.selectedMonsterIndexes[0];
+      if (equipTargetMonsterIndex === undefined) {
+        setPendingSelection(null);
+        return;
+      }
+      setPendingSelection({
+        ...pendingSelection,
+        requirement: {
+          kind: 'pickup_select',
+          side: pendingSelection.ownerSide,
+          candidates: pendingSelection.pickupCandidateCards ?? [],
+        },
+        equipTargetMonsterIndex,
+      });
+      return;
+    }
+
+    // 【追加・拾】phase2(カード選択)確定時: 装備+ターン打ち切りをdispatchし、
+    // pickupResumeContextがあれば元のsequenceへ自動復帰する。
+    if (
+      pendingSelection.isPickupReaction &&
+      pendingSelection.requirement.kind === 'pickup_select' &&
+      answer.kind === 'pickup_select'
+    ) {
+      const { ownerSide: side, equipTargetMonsterIndex } = pendingSelection;
+      if (equipTargetMonsterIndex !== undefined) {
+        dispatch({
+          type: 'EQUIP_SPECIFIC_MANA',
+          payload: {
+            side,
+            monsterIndex: equipTargetMonsterIndex,
+            sourceZone: 'cemetery',
+            manaCardId: answer.selectedCardId,
+          },
+        });
+        dispatch({ type: 'FORCE_END_OPPONENT_TURN', payload: { side } });
+      }
+
+      const resume = pendingSelection.pickupResumeContext;
+      setPendingSelection(null);
+      if (resume) {
+        trySequenceFrom(
+          resume.remainingSteps,
+          resume.originalOwnerSide,
+          resume.originalSourceMonsterIndex,
+          resume.justTrashedCardIds,
+        );
+      }
+      return;
+    }
 
     // choice_of_effectsの場合: 選ばれた選択肢のeffectを改めてtryExecuteに通す。
     if (
@@ -329,9 +470,18 @@ export const useEffectExecutor = (
 
     // 【追加】sequence実行中の場合、このステップのActionをdispatchしてから
     // 残りのステップへ進む(案A: ステップ確定ごとに即dispatch)。
+    // 【追加・拾】拾が割り込んだ場合、sequenceは一旦停止する(拾確定後にpickupResumeContext
+    // 経由で自動復帰する)。
     if (pendingSelection.sequenceContext) {
-      if (actions) actions.forEach((action) => dispatch(action));
       const trashedIds = actions ? extractTrashedCardIds(actions) : undefined;
+      const pickupStarted = actions
+        ? dispatchWithPassives(actions, pendingSelection.ownerSide, {
+            remainingSteps: pendingSelection.sequenceContext.remainingSteps,
+            justTrashedCardIds: trashedIds,
+            sourceMonsterIndex: pendingSelection.sourceMonsterIndex,
+          })
+        : false;
+      if (pickupStarted) return;
       trySequenceFrom(
         pendingSelection.sequenceContext.remainingSteps,
         pendingSelection.ownerSide,
@@ -343,7 +493,7 @@ export const useEffectExecutor = (
 
     // 【追加】出の同数ケース、1巡目確定後の処理。dispatchしてから、相手側を対象に2巡目を開始する。
     if (pendingSelection.deckCompareBranchPending) {
-      if (actions) actions.forEach((action) => dispatch(action));
+      if (actions) dispatchWithPassives(actions, pendingSelection.ownerSide);
       const nextSide = pendingSelection.deckCompareBranchPending;
       const nextCtx = {
         ownerSide: pendingSelection.ownerSide,
@@ -369,8 +519,15 @@ export const useEffectExecutor = (
       return;
     }
 
-    if (actions) actions.forEach((action) => dispatch(action));
-    setPendingSelection(null);
+    if (actions) {
+      const pickupStarted = dispatchWithPassives(
+        actions,
+        pendingSelection.ownerSide,
+      );
+      if (!pickupStarted) setPendingSelection(null);
+    } else {
+      setPendingSelection(null);
+    }
   };
 
   const cancelSelection = () => setPendingSelection(null);

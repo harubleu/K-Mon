@@ -116,6 +116,15 @@ export interface JankenSelectRequirement {
   resolveTieAsOutcome: boolean; // true = あいこも決着として扱う(tieCount定義済み。現状は哲のみ)
 }
 
+// --- 【追加】拾: 相手の効果で墓地送りになった自分のマナカードから1枚選び、
+// 選んだモンスターに装備するケース(phase2)。phase1(装備先モンスター選択)は
+// 既存のMonsterSelectRequirementをそのまま流用する(生・方と同じ2段階選択パターン)。
+export interface PickupSelectRequirement {
+  kind: 'pickup_select';
+  side: PlayerSide;
+  candidates: { id: string; kanji: string; reading: string }[];
+}
+
 export type SelectionRequirement =
   | DeckSelectRequirement
   | DeckReorderRequirement
@@ -128,7 +137,8 @@ export type SelectionRequirement =
   | NumberSelectRequirement
   | ChoiceOfEffectsSelectRequirement
   | JankenSelectRequirement
-  | ZoneMoveSelectRequirement;
+  | ZoneMoveSelectRequirement
+  | PickupSelectRequirement;
 
 /**
  * resolveMonsterEffectがnullを返した効果に対して、既存UIへの誘導が可能か判定する。
@@ -318,6 +328,20 @@ export function describeSelectionRequirement(
         kanjiFilter: [effect.recoverKanji],
         actionLabel: '選択したカードを山札に戻す',
       };
+
+    // 【追加】囲: 墓地からマナを2枚選び、reservedCardsへ並べる（保持ゾーンの充填）。
+    // graveyard_select_recoverと似た「墓地カードを選ぶ」UIだが行き先がreservedCardsである点が異なる。
+    case 'graveyard_partial_to_reserve': {
+      const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+      const cappedCount = Math.min(effect.count, cemetery.length);
+      if (cappedCount === 0) return null;
+      return {
+        kind: 'graveyard_select',
+        side: ctx.ownerSide,
+        constraint: { min: cappedCount, max: cappedCount },
+        actionLabel: 'このモンスターの前に並べる',
+      };
+    }
 
     case 'flip_monster_facedown': {
       const side = resolveSide(effect.targetSide, ctx.ownerSide);
@@ -570,7 +594,9 @@ export type EffectSelectionAnswer =
   // (「何を選んだか」ではなく「どう決着したか」を返す点が他のkindと異なる)。
   | { kind: 'janken_select'; outcome: 'win' | 'tie' | 'lose' }
   // 【追加】然: 選ばれたカードID(山札1番上か墓地のいずれか)を返す
-  | { kind: 'zone_move_select'; selectedCardId: string };
+  | { kind: 'zone_move_select'; selectedCardId: string }
+  // 【追加】拾: phase2で選ばれた、装備するマナカードのIDを返す
+  | { kind: 'pickup_select'; selectedCardId: string };
 
 /**
  * describeSelectionRequirementで示した内容に対する回答(answer)を受けて、
@@ -1047,6 +1073,23 @@ export function buildActionsFromSelection(
         });
       }
       return actions;
+    }
+
+    // 【追加】囲: 選択された墓地カードをreservedCardsへ送る(墓地起点)。
+    case 'graveyard_partial_to_reserve': {
+      if (answer.kind !== 'graveyard_select') return null;
+      if (ctx.sourceMonsterIndex === undefined) return null;
+      return [
+        {
+          type: 'MOVE_CARD_TO_RESERVE',
+          payload: {
+            side: ctx.ownerSide,
+            monsterIndex: ctx.sourceMonsterIndex,
+            cardIds: answer.selectedCardIds,
+            sourceZone: 'cemetery',
+          },
+        },
+      ];
     }
 
     // 【追加】言・信・競・招・右・哲: じゃんけんの決着結果に応じて対象・枚数を算出する。

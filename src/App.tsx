@@ -29,6 +29,7 @@ import { GameStatusAlertModal } from './components/GameStatusAlertModal';
 import { EquipSwapPickerModal } from './components/GameBoard/EquipSwapPickerModal';
 import { MixedZoneTrashPickerModal } from './components/GameBoard/MixedZoneTrashPickerModal';
 import { MonsterSelectModal } from './components/GameBoard/MonsterSelectModal';
+import { PickupSelectModal } from './components/GameBoard/PickupSelectModal';
 import { NumberPickerModal } from './components/GameBoard/NumberPickerModal';
 import { ChoiceOfEffectsModal } from './components/GameBoard/ChoiceOfEffectsModal';
 import { ZoneMoveSelectModal } from './components/GameBoard/ZoneMoveSelectModal';
@@ -512,6 +513,19 @@ export const App: React.FC = () => {
     };
   })();
 
+  // 【追加・拾】pickup_select用(phase2: 拾ったカードからの選択)
+  const pickupSelectProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'pickup_select') return null;
+    const req = pendingSelection.requirement;
+    return {
+      candidates: req.candidates,
+      onConfirm: (selectedCardId: string) =>
+        confirmSelection({ kind: 'pickup_select', selectedCardId }),
+      onCancel: cancelSelection,
+    };
+  })();
+
   // 【追加】刃・屍・死・葬用
   const numberSelectProps = (() => {
     if (!pendingSelection) return null;
@@ -757,6 +771,14 @@ export const App: React.FC = () => {
             excludeMonsterIndex={monsterSelectProps?.excludeMonsterIndex}
             onConfirm={monsterSelectProps?.onConfirm ?? (() => {})}
             onCancel={monsterSelectProps?.onCancel ?? (() => {})}
+          />
+
+          {/* 【追加】拾用 */}
+          <PickupSelectModal
+            isOpen={!!pickupSelectProps}
+            candidates={pickupSelectProps?.candidates ?? []}
+            onConfirm={pickupSelectProps?.onConfirm ?? (() => {})}
+            onCancel={pickupSelectProps?.onCancel ?? (() => {})}
           />
 
           {/* 【追加】刃・屍・死・葬用 */}

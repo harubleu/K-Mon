@@ -180,6 +180,35 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         </div>
       </div>
 
+      {/* 【追加・明】deckTopRevealedがtrueの間、山札の一番上のマナを常時公開表示する。
+          墓地表示とは別枠の専用バッジ表示とし、ドラッグ不可（DraggableManaでラップしない）。 */}
+      {playerState.deckTopRevealed && playerState.deck.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '6px 10px',
+            border: '1px solid #6366f1',
+            borderRadius: '6px',
+            backgroundColor: '#eef2ff',
+          }}
+        >
+          <span
+            style={{
+              fontSize: '0.65rem',
+              fontWeight: 'bold',
+              color: '#4338ca',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            トップ公開中
+          </span>
+          <Card card={playerState.deck[0]} size='sm' />
+        </div>
+      )}
+
       {/* 中央: モンスター3枠 */}
       <div style={{ display: 'flex', justifyContent: 'center', flexGrow: 1 }}>
         <MonsterZone

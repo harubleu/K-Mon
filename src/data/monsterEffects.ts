@@ -552,10 +552,11 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       ],
     },
   },
-  // 吸: 抑と同系統の実行パイプライン割り込み（装備マナの墓地送り無効化）
+  // 吸: custom(kyu_negate_own_mana_trash)からPassiveEffectへ移設・実装完了。
+  // 対象は装備中のマナカード(TRASH_MANA)限定、相手の効果限定、常時発動。
   // 吸（キュウ）
   m00086: {
-    effect: { effectId: 'custom', handlerKey: 'kyu_negate_own_mana_trash' },
+    passiveEffect: { trigger: 'negate_own_mana_trash_by_opponent' },
   },
 
   // ============================================================
@@ -899,8 +900,10 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       shuffleAfter: false,
     },
   },
+  // 囲: 前準備(発動ボタン)+常時パッシブ(割り込み)の両方を持つ、養と同型の二重定義カード。
   // 囲（イ）
   m00119: {
+    effect: { effectId: 'graveyard_partial_to_reserve', count: 2 },
     passiveEffect: {
       trigger: 'shield_counter_deck_protection',
       bufferSize: 2,

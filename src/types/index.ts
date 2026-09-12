@@ -245,7 +245,10 @@ export type MonsterEffect =
   | {
       effectId: 'deck_reduce_scaling_by_activation_count';
       tiers: { maxCount: number; reduceCount: number }[];
-    };
+    }
+  // 【追加】囲(m00119)で確認：墓地からマナを2枚選び、reservedCardsへ並べる（保持ゾーンの充填）。
+  // 保(deck_partial_to_reserve、山札→reservedCards)とは向きが逆（墓地→reservedCards）。
+  | { effectId: 'graveyard_partial_to_reserve'; count: number };
 
 // --- 永続効果（表向き固定、盤面に残り続けて以後の処理に割り込む） ---
 export type PassiveEffect =
@@ -322,7 +325,11 @@ export type PassiveEffect =
       trigger: 'replace_own_effect_opponent_reduce';
       selfCost: number;
       opponentCount: number;
-    };
+    }
+  // 【追加】吸(m00086)で確認：抑と同系統だが対象はTRASH_MANA(装備中のマナカードの破棄)限定。
+  // 「あいてのカードの効果により」自分の装備マナが墓地送りになる直前に割り込み、無効化する。
+  // consumeAfterUseに相当する概念は無く常時発動(原文に回数制限の記載なし)。
+  | { trigger: 'negate_own_mana_trash_by_opponent' };
 
 // --- マナカード ---
 export interface ManaCard {
@@ -471,7 +478,13 @@ export type MoveCardBetweenZonesAction = {
 
 export type MoveCardToReserveAction = {
   type: 'MOVE_CARD_TO_RESERVE';
-  payload: { side: PlayerSide; monsterIndex: number; cardIds: string[] };
+  payload: {
+    side: PlayerSide;
+    monsterIndex: number;
+    cardIds: string[];
+    // 【追加・囲】移動元ゾーン。未指定時は'deck'扱い（保の既存呼び出し箇所との後方互換のため）。
+    sourceZone?: 'deck' | 'cemetery';
+  };
 };
 
 export type ReorderDeckAction = {
@@ -535,6 +548,21 @@ export type RemoveMonsterFromGameAction = {
   payload: { side: PlayerSide; monsterIndex: number };
 };
 
+// 【追加・囲】reservedCardsから指定1枚を取り除き、墓地へ送るAction。
+// MOVE_CARD_TO_RESERVE(山札→reservedCards、追加方向)とは逆方向。
+export type ConsumeReservedCardAction = {
+  type: 'CONSUME_RESERVED_CARD';
+  payload: { side: PlayerSide; monsterIndex: number; cardId: string };
+};
+
+// 【追加・拾】相手のターンを打ち切り、自分のターンをその場で開始するAction。
+// NEXT_PHASEを経由せず即座にturnPlayer/currentPhaseを切り替える点がGRANT_EXTRA_TURN(電)と異なる
+// (電は自分のNEXT_PHASE時に判定するが、拾は相手ターン中に割り込んで発動するため)。
+export type ForceEndOpponentTurnAction = {
+  type: 'FORCE_END_OPPONENT_TURN';
+  payload: { side: PlayerSide }; // 自分のターンを開始する側
+};
+
 export type GameAction =
   | EquipManaAction
   | TrashManaAction
@@ -553,6 +581,8 @@ export type GameAction =
   | SetDeckTopRevealedAction
   | IncrementActivationCountAction
   | RemoveMonsterFromGameAction
+  | ConsumeReservedCardAction
+  | ForceEndOpponentTurnAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }
