@@ -413,6 +413,30 @@ export const useEffectExecutor = (
       return;
     }
 
+    // 【追加・操】選ばれた相手モンスターのeffectを、操の発動者(ownerSide)・
+    // 操自身(sourceMonsterIndex)を基準に改めてtryExecuteへ通す(choice_of_effectsと同じ設計)。
+    // 選ばれたモンスターがeffectを持たない場合は不発として扱う(候補には出すが選ぶと不発、
+    // というユーザー確認済みの仕様)。
+    if (
+      pendingSelection.effect.effectId === 'copy_opponent_monster_effect' &&
+      answer.kind === 'monster_select'
+    ) {
+      const targetMonsterIndex = answer.selectedMonsterIndexes[0];
+      const opponentSide = getOpponentSide(pendingSelection.ownerSide);
+      const targetMonster =
+        targetMonsterIndex !== undefined
+          ? getPlayerState(gameState, opponentSide).monsters[targetMonsterIndex]
+          : undefined;
+      setPendingSelection(null);
+      if (!targetMonster?.effect) return; // 不発(effect未定義)
+      tryExecute(
+        targetMonster.effect,
+        pendingSelection.ownerSide,
+        pendingSelection.sourceMonsterIndex,
+      );
+      return;
+    }
+
     // 【追加】graveyard_select_equip(excludeSelf)のphase1確定時。まだActionを組み立てず、
     // 選ばれた装備先モンスターのindexを載せてphase2(墓地カード選択)へ進む。
     // sequenceContextが存在する場合(生・方のように外側sequenceのstep2として発動している場合)は

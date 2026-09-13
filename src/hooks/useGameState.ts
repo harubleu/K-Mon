@@ -275,7 +275,41 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const nextTurnCount =
         turnPlayer === 'opponent' ? turnCount + 1 : turnCount;
 
+      // 【追加・政】自ターンが始まる側(nextTurnPlayer)が政(seeded_mana_return_win_condition)を
+      // 持っており、かつ自分がマークしたカード(seededBy.side===nextTurnPlayer)が相手の墓地に
+      // 存在する場合、勝利条件が成立する。混入後は相手が引いて墓地送りにするまで毎自ターン
+      // 開始時にチェックし続ける(消費・回数制限の概念なし)。
+      // 【重要】判定ロジックはここまで実装するが、実際の勝敗(gameStatus)への反映は
+      // 外部の勝敗システム接続待ち(design_document.md「要:勝敗接続」グループと同枠、浅と同様)
+      // のため、現時点ではログ出力のみに留める(gameStatusは変更しない)。
+      const nextPlayerState = stateAfterReserve[nextTurnPlayer];
+      const opponentOfNextPlayer =
+        nextTurnPlayer === 'player' ? 'opponent' : 'player';
+      const opponentCemetery = stateAfterReserve[opponentOfNextPlayer].cemetery;
+      const hasSeiPassive = nextPlayerState.monsters.some((m) => {
+        const passives = Array.isArray(m.passiveEffect)
+          ? m.passiveEffect
+          : m.passiveEffect
+            ? [m.passiveEffect]
+            : [];
+        return passives.some(
+          (p) => p.trigger === 'seeded_mana_return_win_condition',
+        );
+      });
+      const seiWinConditionMet =
+        hasSeiPassive &&
+        opponentCemetery.some((c) => c.seededBy?.side === nextTurnPlayer);
+      const seiLogs: ActionLog[] = seiWinConditionMet
+        ? [
+            createLog(
+              'alert',
+              `${getSideLabel(nextTurnPlayer)}の政の勝利条件が成立しました（外部勝敗システム未接続のため実際の決着は保留）。`,
+            ),
+          ]
+        : [];
+
       const newLogs = [
+        ...seiLogs,
         createLog(
           'system',
           `ターン ${nextTurnCount} 開始 (${getSideLabel(nextTurnPlayer)}のターン)`,
@@ -787,6 +821,31 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           createLog(
             'system',
             `${getSideLabel(side)}の山札のカードにトラップ効果が仕込まれました。`,
+          ),
+          ...state.logs,
+        ],
+      };
+    }
+
+    // 【追加・政】相手の山札に混入したカード群にseededByタグを付ける。
+    // SET_DECK_CARD_TRAP(忍)と同じ「カード実体に直接タグを持たせる」パターン。
+    case 'SET_MANA_SEEDED_MARKER': {
+      const { side, cardIds, markedBySide } = action.payload;
+      const player = state[side];
+      const updatedDeck = player.deck.map((c) =>
+        cardIds.includes(c.id) ? { ...c, seededBy: { side: markedBySide } } : c,
+      );
+
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          deck: updatedDeck,
+        },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(markedBySide)}の政が${getSideLabel(side)}の山札にマナを混入しました。`,
           ),
           ...state.logs,
         ],

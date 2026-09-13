@@ -1093,6 +1093,8 @@ export function resolveMonsterEffect(
     case 'swap_equipped_with_graveyard':
     case 'graveyard_auto_equip_by_target_slots':
     case 'graveyard_partial_to_reserve': // 選択要のためeffectSelection.ts側で対応
+    case 'copy_opponent_monster_effect': // 選択要(monster_select)のためeffectSelection.ts側で対応
+    case 'deck_seed_mana_win_condition': // 選択要(graveyard_select)のためeffectSelection.ts側で対応
     case 'custom':
       return null;
 

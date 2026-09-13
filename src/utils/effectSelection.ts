@@ -343,6 +343,51 @@ export function describeSelectionRequirement(
       };
     }
 
+    // 【追加】政: 自分の墓地から、相手のデッキ構成(山札/装備中/保持/墓地/除外の全領域合計)に
+    // 存在しない漢字種類のマナを1~maxCount枚選ぶ。候補漢字が0種類(相手が全種類を保有)の場合は
+    // 不発(null)。選べる枚数は「候補漢字に一致する自分の墓地の実枚数」でも頭打ちにする。
+    case 'deck_seed_mana_win_condition': {
+      const opponentSide = getOpponentSide(ctx.ownerSide);
+      const opp = getPlayerState(ctx.gameState, opponentSide);
+      const opponentKanjiSet = new Set<string>();
+      opp.deck.forEach((c) => opponentKanjiSet.add(c.kanji));
+      opp.cemetery.forEach((c) => opponentKanjiSet.add(c.kanji));
+      opp.exile.forEach((c) => opponentKanjiSet.add(c.kanji));
+      opp.monsters.forEach((m) => {
+        m.equippedMana.forEach((c) => c && opponentKanjiSet.add(c.kanji));
+        (m.reservedCards ?? []).forEach((c) => opponentKanjiSet.add(c.kanji));
+      });
+
+      const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+      const eligibleCards = cemetery.filter(
+        (c) => !opponentKanjiSet.has(c.kanji),
+      );
+      if (eligibleCards.length === 0) return null; // 候補0件なら不発
+
+      const eligibleKanji = Array.from(
+        new Set(eligibleCards.map((c) => c.kanji)),
+      );
+      const cappedMax = Math.min(effect.maxCount, eligibleCards.length);
+      return {
+        kind: 'graveyard_select',
+        side: ctx.ownerSide,
+        constraint: { min: 1, max: cappedMax },
+        kanjiFilter: eligibleKanji,
+        actionLabel: '選択したカードを相手の山札に混入する',
+      };
+    }
+
+    // 【追加】操: 相手のモンスターを1体選ぶ(制限なし)。選ばれたモンスターのeffectの解決は
+    // useEffectExecutor.ts側の再帰処理(tryExecute)に委ねる(choice_of_effectsと同じ設計)。
+    case 'copy_opponent_monster_effect': {
+      const side = getOpponentSide(ctx.ownerSide);
+      return {
+        kind: 'monster_select',
+        side,
+        constraint: { min: 1, max: 1 },
+      };
+    }
+
     case 'flip_monster_facedown': {
       const side = resolveSide(effect.targetSide, ctx.ownerSide);
       return {
@@ -1091,6 +1136,42 @@ export function buildActionsFromSelection(
         },
       ];
     }
+
+    // 【追加】政: 選択された自分の墓地カードを相手の山札へ移動しシャッフル、
+    // 移動した各カードにseededByタグ(markedBySide=自分)を付ける。
+    // own_turn_startパイプライン(seeded_mana_return_win_condition)がこのタグを見て
+    // 「相手の墓地にあるか」を毎自ターン開始時に判定する。
+    case 'deck_seed_mana_win_condition': {
+      if (answer.kind !== 'graveyard_select') return null;
+      const ownerSide = ctx.ownerSide;
+      const opponentSide = getOpponentSide(ownerSide);
+      const cardIds = answer.selectedCardIds;
+      if (cardIds.length === 0) return [];
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: ownerSide,
+            targetSide: opponentSide,
+            cardIds,
+            sourceZone: 'cemetery',
+            targetZone: 'deck',
+          },
+        },
+        { type: 'SHUFFLE_DECK', payload: { side: opponentSide } },
+        {
+          type: 'SET_MANA_SEEDED_MARKER',
+          payload: { side: opponentSide, cardIds, markedBySide: ownerSide },
+        },
+      ];
+    }
+
+    // 【追加】操: 選ばれた相手モンスターのeffectを控えるだけの中間ステップ。
+    // 実際の解決(tryExecuteへの再帰投入)はuseEffectExecutor.ts側のconfirmSelection内、
+    // choice_of_effectsと同様の特別分岐で行うため、ここには到達しない
+    // (monster_select確定時にconfirmSelection側で横取りされる)。念のため型として用意。
+    case 'copy_opponent_monster_effect':
+      return null;
 
     // 【追加】言・信・競・招・右・哲: じゃんけんの決着結果に応じて対象・枚数を算出する。
     // 哲の原文「かち▷あいて／あいこ▷あいて／まけ▷じぶん」で確認した対応関係に基づく。

@@ -248,7 +248,17 @@ export type MonsterEffect =
     }
   // 【追加】囲(m00119)で確認：墓地からマナを2枚選び、reservedCardsへ並べる（保持ゾーンの充填）。
   // 保(deck_partial_to_reserve、山札→reservedCards)とは向きが逆（墓地→reservedCards）。
-  | { effectId: 'graveyard_partial_to_reserve'; count: number };
+  | { effectId: 'graveyard_partial_to_reserve'; count: number }
+  // 【追加】操(m00015)で確認：相手のモンスターを1体選び、そのモンスターのeffectを
+  // 操の発動者(ownerSide)視点で(sourceMonsterIndexは操自身のまま)発動する。custom→専用effectIdへ昇格。
+  // パラメータ不要(常に相手全モンスターが候補、制限なし)。
+  | { effectId: 'copy_opponent_monster_effect' }
+  // 【追加】政(m00117)で確認：自分の墓地から、相手のデッキ構成(山札/装備中/保持/墓地/除外の
+  // 全領域合計)に存在しない漢字種類のマナを1~4枚選び、相手の山札に混入してシャッフルする。
+  // 混入したカード実体にseededByタグを付け、own_turn_startパイプライン側で
+  // 「相手の墓地にそのカードがあるか」を毎自ターン開始時チェックし続ける(要:勝敗システム接続)。
+  // custom→専用effectIdへ昇格。
+  | { effectId: 'deck_seed_mana_win_condition'; maxCount: number };
 
 // --- 永続効果（表向き固定、盤面に残り続けて以後の処理に割り込む） ---
 export type PassiveEffect =
@@ -329,7 +339,12 @@ export type PassiveEffect =
   // 【追加】吸(m00086)で確認：抑と同系統だが対象はTRASH_MANA(装備中のマナカードの破棄)限定。
   // 「あいてのカードの効果により」自分の装備マナが墓地送りになる直前に割り込み、無効化する。
   // consumeAfterUseに相当する概念は無く常時発動(原文に回数制限の記載なし)。
-  | { trigger: 'negate_own_mana_trash_by_opponent' };
+  | { trigger: 'negate_own_mana_trash_by_opponent' }
+  // 【追加】政(m00117)で確認：deck_seed_mana_win_conditionで相手の山札へ混入したマナ
+  // (ManaCard.seededByでタグ付け)が、政の所有者の自ターン開始時点で相手の墓地に
+  // 存在するかを判定する。混入後、相手が引いて墓地送りにするまで毎自ターン開始時に
+  // チェックし続ける(消費・回数制限の概念なし)。要:勝敗システム接続。
+  | { trigger: 'seeded_mana_return_win_condition' };
 
 // --- マナカード ---
 export interface ManaCard {
@@ -341,6 +356,11 @@ export interface ManaCard {
   // 【追加】忍等の「ドローされた瞬間に追加効果が発動する」トラップマーク。
   // deck_mark_delayed_reduceが仕込み、AUTO_DRAW側で検知・消費する。
   trapEffect?: { reduceCount: number; destination: 'cemetery' | 'exile' };
+  // 【追加】政(deck_seed_mana_win_condition)が相手の山札へ混入したカードに付けるマーク。
+  // 忍のtrapEffectと同じ「カード実体に直接タグを持たせ、位置変動(シャッフル等)に頑健にする」
+  // パターン。own_turn_startパイプライン側で「seededByを持つカードが所有側の墓地にあるか」を
+  // 判定するために使う(判定側であるside=政の所有者を記録)。
+  seededBy?: { side: PlayerSide };
 }
 
 // --- モンスターカード ---
@@ -515,6 +535,14 @@ export type SetDeckCardTrapAction = {
   };
 };
 
+// 【追加・政】相手の山札に混入したカードにseededByタグを付与するAction。
+// SET_DECK_CARD_TRAP(忍)と同じ「カード実体に直接タグを持たせる」パターン。
+// side: タグを付ける対象カードが今いる側(=相手側)。markedBySide: 政の所有者(判定時に使う)。
+export type SetManaSeededMarkerAction = {
+  type: 'SET_MANA_SEEDED_MARKER';
+  payload: { side: PlayerSide; cardIds: string[]; markedBySide: PlayerSide };
+};
+
 // 【追加】redirect_own_deck_reduce(consumeAfterUse:true)・block_next_deck_reduce_effectを
 // 発動後に無効化するためのAction。MonsterCard.consumedPassiveIndexesへpassiveIndexを追記する。
 export type ConsumePassiveEffectAction = {
@@ -583,6 +611,7 @@ export type GameAction =
   | RemoveMonsterFromGameAction
   | ConsumeReservedCardAction
   | ForceEndOpponentTurnAction
+  | SetManaSeededMarkerAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }

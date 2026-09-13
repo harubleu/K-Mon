@@ -68,10 +68,10 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   m00014: {
     effect: { effectId: 'deck_compare_reduce', count: 5, tieBehavior: 'both' },
   },
-  // 操: 着手後回し方針（design_document.md 7.3節・7.5節参照）。handlerKeyは仮置き
+  // 操: 原文確認済み。custom→専用effectId(copy_opponent_monster_effect)へ昇格。
   // 操（ソウ）
   m00015: {
-    effect: { effectId: 'custom', handlerKey: 'sou_copy_opponent_effect' },
+    effect: { effectId: 'copy_opponent_monster_effect' },
   },
   // 品（ヒン）
   m00016: { effect: { effectId: 'graveyard_select_recover', count: 5 } },
@@ -884,10 +884,12 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       ],
     },
   },
-  // 政: 要:勝敗システム接続、ManaCardへのIDタグ付け＋「未使用マナ」制約の監視が必要
+  // 政: 原文確認済み。custom→専用effectId(deck_seed_mana_win_condition)へ昇格。
+  // 囲・養と同型の「発動(前準備)+常時パッシブ(勝敗監視)」の二重定義カード。要:勝敗システム接続。
   // 政（セイ）
   m00117: {
-    effect: { effectId: 'custom', handlerKey: 'sei_seeded_mana_win_condition' },
+    effect: { effectId: 'deck_seed_mana_win_condition', maxCount: 4 },
+    passiveEffect: { trigger: 'seeded_mana_return_win_condition' },
   },
   // 正: 【修正】deck_select_equip類似→deck_select_trashが正しい分類
   // 正（セイ）
