@@ -34,7 +34,13 @@ import { NumberPickerModal } from './components/GameBoard/NumberPickerModal';
 import { ChoiceOfEffectsModal } from './components/GameBoard/ChoiceOfEffectsModal';
 import { ZoneMoveSelectModal } from './components/GameBoard/ZoneMoveSelectModal';
 import type { ZoneMoveCandidate } from './components/GameBoard/ZoneMoveSelectModal';
-import { getActivatableEffect } from './utils/effectExecutor';
+import { DeckCompositionPredictModal } from './components/GameBoard/DeckCompositionPredictModal';
+import {
+  getActivatableEffect,
+  findDrawReplacePassive,
+  findOwnTurnEndPredictWinMonsterIndex,
+  getOpponentSide,
+} from './utils/effectExecutor';
 
 export const App: React.FC = () => {
   const playerBuilder = useDeckBuilder();
@@ -54,6 +60,16 @@ export const App: React.FC = () => {
   const [jankenPurpose, setJankenPurpose] = useState<'start' | 'battle'>(
     'start',
   );
+  // 【追加・仁】ドローボタン割り込み用。free-choice(仁)の場合のみ選択UIを開く必要があるため
+  // 保持する(花はkanji固定のため選択UI自体が不要で、このstateは使わない)。
+  const [pendingDrawReplace, setPendingDrawReplace] = useState<{
+    side: PlayerSide;
+  } | null>(null);
+  // 【追加・激】「ターンを終了」ボタン割り込み用。予想する漢字を選ぶモーダルを開くために保持する。
+  const [pendingTurnEndPrediction, setPendingTurnEndPrediction] = useState<{
+    side: PlayerSide;
+    monsterIndex: number;
+  } | null>(null);
 
   const [activeDragData, setActiveDragData] = useState<{
     manaCardId: string;
@@ -272,15 +288,101 @@ export const App: React.FC = () => {
     });
   };
   const handleNextPhase = () => {
+    // 他の効果解決中(pendingSelection)は多重発動ガードに準じてターン終了割り込みを避ける。
+    if (pendingSelection) {
+      dispatch({ type: 'NEXT_PHASE' });
+      return;
+    }
+
+    const side = gameState.turnPlayer;
+    const monsterIndex = findOwnTurnEndPredictWinMonsterIndex(
+      gameState[side].monsters,
+    );
+    if (monsterIndex !== -1) {
+      setPendingTurnEndPrediction({ side, monsterIndex });
+      return;
+    }
+    dispatch({ type: 'NEXT_PHASE' });
+  };
+
+  // 【追加・激】予想する漢字の宣言確定時のハンドラー。予想を保存してからNEXT_PHASEをdispatchする。
+  const handleConfirmTurnEndPrediction = (selectedKanji: string[]) => {
+    if (pendingTurnEndPrediction && selectedKanji[0]) {
+      dispatch({
+        type: 'SET_PREDICTED_DRAW_KANJI',
+        payload: {
+          side: pendingTurnEndPrediction.side,
+          monsterIndex: pendingTurnEndPrediction.monsterIndex,
+          kanji: selectedKanji[0],
+        },
+      });
+    }
+    setPendingTurnEndPrediction(null);
+    dispatch({ type: 'NEXT_PHASE' });
+  };
+
+  // 【追加・激】予想の宣言をキャンセルした場合も、ターン終了自体は通常通り進行させる
+  // (「宣言必須で足止めする」設計ではなく、任意宣言として扱う方針)。
+  const handleCancelTurnEndPrediction = () => {
+    setPendingTurnEndPrediction(null);
     dispatch({ type: 'NEXT_PHASE' });
   };
 
   const handleAutoDraw = (player: PlayerSide) => {
+    // 【注記】他の効果解決中(pendingSelection)は、二重にモーダルが開く事故を避けるため
+    // 新規の割り込み判定自体はスキップする(handleNextPhaseと同じ考え方)。ただし、これは
+    // 従来からdraw系ボタン自体がpendingSelectionでガードされていなかった挙動を変更しない
+    // ための配慮であり、AUTO_DRAWのdispatch自体は従来通り常に行われる。
+    const playerState = gameState[player];
+    const drawReplace = pendingSelection
+      ? null
+      : findDrawReplacePassive(playerState.monsters);
+    if (drawReplace) {
+      if (drawReplace.passive.sourceKanji) {
+        // 花: 漢字固定のため選択UI不要。墓地に該当があれば自動採用、無ければ通常ドローへ。
+        const card = playerState.cemetery.find(
+          (c) => c.kanji === drawReplace.passive.sourceKanji,
+        );
+        if (card) {
+          dispatch({
+            type: 'DRAW_REPLACE_FROM_GRAVEYARD',
+            payload: { side: player, cardId: card.id },
+          });
+          return;
+        }
+      } else if (playerState.cemetery.length > 0) {
+        // 仁: 自由選択。墓地が空でなければ選択UIを開く(空なら通常ドローへフォールバック)。
+        setPendingDrawReplace({ side: player });
+        return;
+      }
+    }
+
     dispatch({
       type: 'AUTO_DRAW',
       payload: { player },
     });
-    // ※今後、ここに「1枚ドロー確認」モーダル等を開く処理を追加します
+  };
+
+  // 【追加・仁】墓地からのドロー代替、選択確定時のハンドラー
+  const handleConfirmDrawReplace = (selectedCardId: string) => {
+    if (pendingDrawReplace) {
+      dispatch({
+        type: 'DRAW_REPLACE_FROM_GRAVEYARD',
+        payload: { side: pendingDrawReplace.side, cardId: selectedCardId },
+      });
+    }
+    setPendingDrawReplace(null);
+  };
+
+  // 【追加・仁】選択をキャンセルした場合は通常の山札ドローにフォールバックする
+  const handleCancelDrawReplace = () => {
+    if (pendingDrawReplace) {
+      dispatch({
+        type: 'AUTO_DRAW',
+        payload: { player: pendingDrawReplace.side },
+      });
+    }
+    setPendingDrawReplace(null);
   };
 
   // 1. D&D用センサーの設定（ボタンクリック動作と誤判定されないよう5pxの遊びを設定）
@@ -607,6 +709,35 @@ export const App: React.FC = () => {
     return { candidates };
   })();
 
+  // 【追加】国用。ChoiceOfEffectsModalを流用するが、choice_of_effects(二・三)とは別kind
+  // (zone_target_select)から発行されるため、choiceOfEffectsPropsとは独立して導出する。
+  // 4択は常に自動判定できる(サブ効果の選択ではない)ため、supportedは常にtrueで固定する。
+  const zoneTargetSelectProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'zone_target_select') return null;
+    const req = pendingSelection.requirement;
+    return {
+      options: req.options.map((label) => ({ label, supported: true })),
+      onConfirm: (selectedIndex: number) =>
+        confirmSelection({ kind: 'zone_target_select', selectedIndex }),
+      onCancel: cancelSelection,
+    };
+  })();
+
+  // 【追加】究用。相手の山札の合計枚数のみ参考表示し、内訳は見せない。
+  const deckCompositionPredictProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'deck_composition_predict')
+      return null;
+    const opponentSide = getOpponentSide(pendingSelection.ownerSide);
+    return {
+      opponentDeckCount: gameState[opponentSide].deck.length,
+      onConfirm: (composition: Record<string, number>) =>
+        confirmSelection({ kind: 'deck_composition_predict', composition }),
+      onCancel: cancelSelection,
+    };
+  })();
+
   // 【追加】どちら側のPlayerZoneにDeckModalを開かせるべきか
   const pendingSelectionSide =
     pendingSelection &&
@@ -781,6 +912,35 @@ export const App: React.FC = () => {
             onCancel={pickupSelectProps?.onCancel ?? (() => {})}
           />
 
+          {/* 【追加・激】「ターンを終了」ボタン割り込み由来の予想宣言モーダル。
+              KanjiTypePickerModalを流用(既存のkanjiTypeSelectPropsとは別系統の独立したstate)。 */}
+          <KanjiTypePickerModal
+            isOpen={!!pendingTurnEndPrediction}
+            kanjiCount={1}
+            onConfirm={handleConfirmTurnEndPrediction}
+            onCancel={handleCancelTurnEndPrediction}
+          />
+
+          {/* 【追加・仁】ドローボタン割り込み由来の、墓地からドローするマナの選択モーダル。
+              PickupSelectModal(拾用)をtitle/description/confirmLabelで文言を差し替えて流用する。 */}
+          <PickupSelectModal
+            isOpen={!!pendingDrawReplace}
+            candidates={
+              pendingDrawReplace
+                ? gameState[pendingDrawReplace.side].cemetery.map((c) => ({
+                    id: c.id,
+                    kanji: c.kanji,
+                    reading: c.reading,
+                  }))
+                : []
+            }
+            title='仁の発動：ドローするマナを選択'
+            description='山札の代わりに、墓地から好きなマナを1枚選んでドローします。'
+            confirmLabel='このマナをドローする'
+            onConfirm={handleConfirmDrawReplace}
+            onCancel={handleCancelDrawReplace}
+          />
+
           {/* 【追加】刃・屍・死・葬用 */}
           <NumberPickerModal
             isOpen={!!numberSelectProps}
@@ -805,6 +965,24 @@ export const App: React.FC = () => {
               confirmSelection({ kind: 'zone_move_select', selectedCardId })
             }
             onCancel={cancelSelection}
+          />
+
+          {/* 【追加】国用。ChoiceOfEffectsModalを流用(二・三用のインスタンスとは別state系統)。 */}
+          <ChoiceOfEffectsModal
+            isOpen={!!zoneTargetSelectProps}
+            options={zoneTargetSelectProps?.options ?? []}
+            onConfirm={zoneTargetSelectProps?.onConfirm ?? (() => {})}
+            onCancel={zoneTargetSelectProps?.onCancel ?? (() => {})}
+          />
+
+          {/* 【追加】究用。相手の山札構成を丸ごと申告させる専用モーダル。 */}
+          <DeckCompositionPredictModal
+            isOpen={!!deckCompositionPredictProps}
+            opponentDeckCount={
+              deckCompositionPredictProps?.opponentDeckCount ?? 0
+            }
+            onConfirm={deckCompositionPredictProps?.onConfirm ?? (() => {})}
+            onCancel={deckCompositionPredictProps?.onCancel ?? (() => {})}
           />
 
           {/* [上段] Opponent (相手) エリア */}

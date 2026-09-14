@@ -26,6 +26,12 @@ export function getOpponentSide(side: PlayerSide): PlayerSide {
   return side === 'player' ? 'opponent' : 'player';
 }
 
+// 【追加・本/敗/墓/深】ログメッセージ用の簡易ラベル。useGameState.tsのgetSideLabelと同じ
+// 対応関係だが、utils層からhooks層への逆依存を避けるためこのファイル内で完結させる。
+function sideLabel(side: PlayerSide): string {
+  return side === 'player' ? '自分' : '相手';
+}
+
 // masterData定義の相対的な向き（'self'|'opponent'）を、実際のPlayerSideへ変換する。
 // この効果を持つモンスターの所有者（ownerSide）を基準にする。
 export function resolveSide(
@@ -152,7 +158,8 @@ interface DeckReduceIntent {
 }
 
 // passiveEffectは単体/配列どちらもあり得るため配列に正規化する
-function getPassiveList(monster: MonsterCard): PassiveEffect[] {
+// 【変更】暮/浅/政/激の勝敗接続、および仁/花のdraw_replaceからも参照するためexportする。
+export function getPassiveList(monster: MonsterCard): PassiveEffect[] {
   if (!monster.passiveEffect) return [];
   return Array.isArray(monster.passiveEffect)
     ? monster.passiveEffect
@@ -633,6 +640,39 @@ export function getActivatableEffect(
   return monster.effect ?? null;
 }
 
+// 【追加・仁/花】draw_replaceを持つ、表向きのモンスターを1体探し、そのpassiveEffectを返す。
+// ドローボタン起点の割り込み判定(App.tsx handleAutoDraw)から呼ばれる。
+export function findDrawReplacePassive(monsters: MonsterCard[]): {
+  monsterIndex: number;
+  passive: Extract<PassiveEffect, { trigger: 'draw_replace' }>;
+} | null {
+  for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
+    const monster = monsters[monsterIndex];
+    if (monster.isFlipped) continue; // 表向き固定の永続効果のため、裏向きなら対象外
+    const passive = getPassiveList(monster).find(
+      (p): p is Extract<PassiveEffect, { trigger: 'draw_replace' }> =>
+        p.trigger === 'draw_replace',
+    );
+    if (passive) return { monsterIndex, passive };
+  }
+  return null;
+}
+
+// 【追加・激】own_turn_end_predict_winを持つ、表向きのモンスターのindexを探す。
+// 「ターンを終了」ボタン押下時の割り込み判定(App.tsx handleNextPhase)から呼ばれる。
+// 見つからなければ-1(通常のflip_monster_facedown等と同じ「見つからない」規約に合わせる)。
+export function findOwnTurnEndPredictWinMonsterIndex(
+  monsters: MonsterCard[],
+): number {
+  return monsters.findIndex(
+    (monster) =>
+      !monster.isFlipped &&
+      getPassiveList(monster).some(
+        (p) => p.trigger === 'own_turn_end_predict_win',
+      ),
+  );
+}
+
 export interface ExecutorContext {
   ownerSide: PlayerSide;
   gameState: GameState;
@@ -1061,6 +1101,145 @@ export function resolveMonsterEffect(
       ];
     }
 
+    // 【追加・本】自分の山札が0枚なら勝ち、それ以外は自分の山札をotherwise.count枚へらす。
+    // 選択不要のため完全自動解決の対象。要:勝敗接続だったが、SET_GAME_STATUSの新設により対応。
+    case 'deck_count_win_or_reduce': {
+      const selfDeck = getPlayerState(gameState, ownerSide).deck;
+      if (selfDeck.length === effect.winCondition.count) {
+        return [
+          {
+            type: 'SET_GAME_STATUS',
+            payload: {
+              status: ownerSide === 'player' ? 'player_win' : 'opponent_win',
+              logMessage: `${sideLabel(ownerSide)}の本の勝利条件が成立しました。`,
+            },
+          },
+        ];
+      }
+      const cardIds = takeTopDeckIds(
+        gameState,
+        ownerSide,
+        effect.otherwise.count,
+      );
+      if (cardIds.length === 0) return [];
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: ownerSide,
+            targetSide: ownerSide,
+            cardIds,
+            sourceZone: 'deck',
+            targetZone: 'cemetery',
+          },
+        },
+      ];
+    }
+
+    // 【追加・敗】両者の山札差がthreshold以上なら少ない方が負け、それ未満(threshold-1以下)は
+    // 両者をotherwiseCount枚ずつへらす。原文「10まいより大きい／9まいより小さい」は、
+    // このカード群の言い回しの傾向として「10以上／9以下」の意で書かれている(ユーザー確認済み)。
+    // 10と9で隙間なく綺麗に分割されるため、単一のthresholdフィールドに対する
+    // diff >= threshold(決着) / diff < threshold(両者減少) の二分岐として実装する。
+    case 'deck_diff_threshold_win_or_reduce': {
+      const opponentSide = getOpponentSide(ownerSide);
+      const selfDeck = getPlayerState(gameState, ownerSide).deck;
+      const oppDeck = getPlayerState(gameState, opponentSide).deck;
+      const diff = Math.abs(selfDeck.length - oppDeck.length);
+
+      if (diff >= effect.threshold) {
+        const loserSide =
+          selfDeck.length < oppDeck.length ? ownerSide : opponentSide;
+        const winnerSide = getOpponentSide(loserSide);
+        return [
+          {
+            type: 'SET_GAME_STATUS',
+            payload: {
+              status: winnerSide === 'player' ? 'player_win' : 'opponent_win',
+              logMessage: `${sideLabel(loserSide)}の山札が少なく、敗の勝利条件が成立しました。`,
+            },
+          },
+        ];
+      }
+
+      const actions: GameAction[] = [];
+      for (const side of [ownerSide, opponentSide]) {
+        const cardIds = takeTopDeckIds(gameState, side, effect.otherwiseCount);
+        if (cardIds.length > 0) {
+          actions.push({
+            type: 'MOVE_CARD_BETWEEN_ZONES',
+            payload: {
+              sourceSide: side,
+              targetSide: side,
+              cardIds,
+              sourceZone: 'deck',
+              targetZone: 'cemetery',
+            },
+          });
+        }
+      }
+      return actions;
+    }
+
+    // 【追加・墓】両者の墓地合計がthresholdより多ければ発動者の勝ち、それ以外は何も起きない。
+    // 現状データ(m00095)はscope:'combined'のみのため、それ以外のscopeは将来拡張用として未対応のまま残す。
+    case 'graveyard_total_count_threshold_win': {
+      if (effect.scope !== 'combined') return null;
+      const opponentSide = getOpponentSide(ownerSide);
+      const combined =
+        getPlayerState(gameState, ownerSide).cemetery.length +
+        getPlayerState(gameState, opponentSide).cemetery.length;
+      if (combined > effect.threshold) {
+        return [
+          {
+            type: 'SET_GAME_STATUS',
+            payload: {
+              status: ownerSide === 'player' ? 'player_win' : 'opponent_win',
+              logMessage: `${sideLabel(ownerSide)}の墓の勝利条件が成立しました（墓地合計${combined}枚）。`,
+            },
+          },
+        ];
+      }
+      return [];
+    }
+
+    // 【追加・深】自分の山札枚数に応じた段階(tiers)を判定する。最下段(0〜1枚)は勝利、
+    // それ以外の段は相手の山札を固定数へらす。選択不要のため完全自動解決の対象。
+    case 'deck_count_tiered_effect': {
+      const selfCount = getPlayerState(gameState, ownerSide).deck.length;
+      const tier = effect.tiers.find(
+        (t) => selfCount >= t.min && selfCount <= t.max,
+      );
+      if (!tier) return [];
+      if (tier.win) {
+        return [
+          {
+            type: 'SET_GAME_STATUS',
+            payload: {
+              status: ownerSide === 'player' ? 'player_win' : 'opponent_win',
+              logMessage: `${sideLabel(ownerSide)}の深の勝利条件が成立しました。`,
+            },
+          },
+        ];
+      }
+      if (!tier.effect) return [];
+      const targetSide = resolveSide(tier.effect.targetSide, ownerSide);
+      const cardIds = takeTopDeckIds(gameState, targetSide, tier.effect.count);
+      if (cardIds.length === 0) return [];
+      return [
+        {
+          type: 'MOVE_CARD_BETWEEN_ZONES',
+          payload: {
+            sourceSide: targetSide,
+            targetSide,
+            cardIds,
+            sourceZone: 'deck',
+            targetZone: 'cemetery',
+          },
+        },
+      ];
+    }
+
     // 以下、選択・外部システム（勝敗判定）接続・複雑な副作用のいずれかが必要なため未対応（null）。
     // 対応が必要になった時点で、既存UI（DeckModal/JankenModal/MoveDestinationSelector）との
     // 連携方式を別途設計すること（design_document.md 7.8章参照）。
@@ -1074,20 +1253,16 @@ export function resolveMonsterEffect(
     case 'choose_number_reduce_both':
     case 'choose_number_reduce':
     case 'choice_of_effects':
-    case 'deck_count_win_or_reduce':
-    case 'deck_or_graveyard_count_win_condition':
-    case 'deck_count_tiered_effect':
+    case 'deck_or_graveyard_count_win_condition': // 原文の解釈(発動時選択か該当時発動か)が未確定のため保留(design書6章12番)
     case 'deck_select_trash':
     case 'deck_partial_reorder':
     case 'deck_partial_to_reserve':
     case 'deck_kanji_search_equip':
-    case 'graveyard_total_count_threshold_win':
     case 'mixed_zone_select_trash':
     case 'graveyard_recover_then_deck_trash_matching_count':
     case 'monster_remove_from_game':
     case 'draw_and_play_n':
-    case 'deck_predict_full_composition_win':
-    case 'deck_diff_threshold_win_or_reduce':
+    case 'deck_predict_full_composition_win': // 相手山札の構成を丸ごと予想する新規UIが未設計のため保留
     case 'select_zone_move_one':
     case 'flip_monster_facedown':
     case 'swap_equipped_with_graveyard':

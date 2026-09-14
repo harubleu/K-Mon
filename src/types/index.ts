@@ -388,6 +388,10 @@ export interface MonsterCard {
   // 【追加・育】発動回数によって結果が変わる効果用のカウンタ。試合内で累積し、
   // リセットされない。育のexecutor内でのみインクリメントする(汎用フラグではない)。
   activationCount?: number;
+  // 【追加・激】own_turn_end_predict_win用。このモンスターの所有者が「次に相手が引くマナ」
+  // として予想中の漢字。未確定の間は`undefined`。ドロー発生時に判定され、的中・不的中を
+  // 問わず判定後はクリアされる(「次にひく」一回限りの予想のため)。
+  predictedDrawKanji?: string;
 }
 
 export type LogType = 'draw' | 'mana' | 'attack' | 'system' | 'alert';
@@ -543,6 +547,28 @@ export type SetManaSeededMarkerAction = {
   payload: { side: PlayerSide; cardIds: string[]; markedBySide: PlayerSide };
 };
 
+// 【追加・激】ターン終了時に宣言した予想漢字をモンスターへ保存するAction。
+// 「ターンを終了」ボタン押下時の割り込みフロー(App.tsx)から、NEXT_PHASEの前に発火される。
+export type SetPredictedDrawKanjiAction = {
+  type: 'SET_PREDICTED_DRAW_KANJI';
+  payload: { side: PlayerSide; monsterIndex: number; kanji: string };
+};
+
+// 【追加・仁/花】draw_replace用。山札の代わりに、指定した墓地のカードをpendingDrawCardsへ
+// 移動する。AUTO_DRAWと同じ「1枚をpendingへ」という結果になるが、移動元が墓地である点が異なる。
+export type DrawReplaceFromGraveyardAction = {
+  type: 'DRAW_REPLACE_FROM_GRAVEYARD';
+  payload: { side: PlayerSide; cardId: string };
+};
+
+// 【追加・暮/浅/政/激の勝敗接続共通】カード効果由来の勝利条件が成立した際に、gameStatusを
+// 直接更新する汎用Action。既に決着済み(gameStatus!=='playing')の場合はreducer側で無視する
+// (evaluateGameStatusの「すでに決着している場合はスキップ」と同じ防御方針)。
+export type SetGameStatusAction = {
+  type: 'SET_GAME_STATUS';
+  payload: { status: GameStatus; logMessage?: string };
+};
+
 // 【追加】redirect_own_deck_reduce(consumeAfterUse:true)・block_next_deck_reduce_effectを
 // 発動後に無効化するためのAction。MonsterCard.consumedPassiveIndexesへpassiveIndexを追記する。
 export type ConsumePassiveEffectAction = {
@@ -612,6 +638,9 @@ export type GameAction =
   | ConsumeReservedCardAction
   | ForceEndOpponentTurnAction
   | SetManaSeededMarkerAction
+  | SetPredictedDrawKanjiAction
+  | DrawReplaceFromGraveyardAction
+  | SetGameStatusAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }

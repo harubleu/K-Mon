@@ -125,6 +125,22 @@ export interface PickupSelectRequirement {
   candidates: { id: string; kanji: string; reading: string }[];
 }
 
+// --- 【追加】国: 対象(自分/相手)×領域(山札/墓地)の4通りから1つ選ばせるケース。
+// UIはChoiceOfEffectsModalを流用するが、既存choice_of_effects(二・三)とは異なるeffectId
+// (deck_or_graveyard_count_win_condition)から発行されるため、専用のkindとして区別する
+// (App.tsx側のchoiceOfEffectsPropsがeffect.effectId==='choice_of_effects'限定のガードを
+// 持っているため、同じkindを共用すると国側が描画されなくなるのを避けるための分離)。
+// optionsの順序は常に固定: [自分の山札, 自分の墓地, 相手の山札, 相手の墓地]。
+export interface ZoneTargetSelectRequirement {
+  kind: 'zone_target_select';
+  options: string[];
+}
+
+// --- 【追加】究: 相手の山札の構成(漢字種類ごとの枚数)を丸ごと申告させるケース。
+export interface DeckCompositionPredictRequirement {
+  kind: 'deck_composition_predict';
+}
+
 export type SelectionRequirement =
   | DeckSelectRequirement
   | DeckReorderRequirement
@@ -138,7 +154,9 @@ export type SelectionRequirement =
   | ChoiceOfEffectsSelectRequirement
   | JankenSelectRequirement
   | ZoneMoveSelectRequirement
-  | PickupSelectRequirement;
+  | PickupSelectRequirement
+  | ZoneTargetSelectRequirement
+  | DeckCompositionPredictRequirement;
 
 /**
  * resolveMonsterEffectがnullを返した効果に対して、既存UIへの誘導が可能か判定する。
@@ -549,19 +567,23 @@ export function describeSelectionRequirement(
       };
     }
 
+    // ============ 【今回実装】国: 対象×領域の4通りから1つ選ばせる ============
+    case 'deck_or_graveyard_count_win_condition': {
+      if (effect.scope !== 'either_player_either_zone') return null;
+      return {
+        kind: 'zone_target_select',
+        options: ['自分の山札', '自分の墓地', '相手の山札', '相手の墓地'],
+      };
+    }
+
+    // ============ 【今回実装】究: 相手の山札構成を丸ごと申告させる ============
+    case 'deck_predict_full_composition_win':
+      return { kind: 'deck_composition_predict' };
+
     // ============ 見送り: 現状該当カードが'both'/'choose'のみのため（3章参照） ============
     // 型としてはDeckReorderRequirement.scope: {partialTopCount}を既に用意してあるため、
     // self/opponent固定のカードが増えた際はdeck_full_reorderと同様の実装で対応可能
     case 'deck_partial_reorder':
-      return null;
-
-    // ============ 見送り: 外部勝敗システム接続待ち(design_document.md 7.6章2番) ============
-    case 'deck_count_win_or_reduce':
-    case 'deck_or_graveyard_count_win_condition':
-    case 'deck_count_tiered_effect':
-    case 'graveyard_total_count_threshold_win':
-    case 'deck_predict_full_composition_win':
-    case 'deck_diff_threshold_win_or_reduce':
       return null;
 
     // ============ そもそも選択不要(resolveMonsterEffectで自動解決されるはずの効果) ============
@@ -578,6 +600,10 @@ export function describeSelectionRequirement(
     case 'deck_reduce_grant_extra_turn':
     case 'reveal_both_top_until_shuffle':
     case 'deck_reduce_scaling_by_activation_count':
+    case 'deck_count_win_or_reduce':
+    case 'deck_diff_threshold_win_or_reduce':
+    case 'graveyard_total_count_threshold_win':
+    case 'deck_count_tiered_effect':
       return null;
 
     // ============ sequence / custom ============
@@ -641,7 +667,12 @@ export type EffectSelectionAnswer =
   // 【追加】然: 選ばれたカードID(山札1番上か墓地のいずれか)を返す
   | { kind: 'zone_move_select'; selectedCardId: string }
   // 【追加】拾: phase2で選ばれた、装備するマナカードのIDを返す
-  | { kind: 'pickup_select'; selectedCardId: string };
+  | { kind: 'pickup_select'; selectedCardId: string }
+  // 【追加】国: 選ばれた対象(自分/相手×山札/墓地)のindex(0〜3、順序はdescribeSelectionRequirement
+  // のoptionsと同じ固定順)を返す
+  | { kind: 'zone_target_select'; selectedIndex: number }
+  // 【追加】究: 申告した山札構成(漢字→枚数のマップ。0枚の種類はキー自体を含めなくてよい)を返す
+  | { kind: 'deck_composition_predict'; composition: Record<string, number> };
 
 /**
  * describeSelectionRequirementで示した内容に対する回答(answer)を受けて、
@@ -1312,6 +1343,79 @@ export function buildActionsFromSelection(
           },
         },
       ];
+    }
+
+    // 【追加】国: 選ばれたindex(0〜3、固定順)から対象(自分/相手×山札/墓地)を復元し、
+    // 枚数がtargetValues(1か9)に一致すれば勝利、それ以外は何も起きない。
+    case 'deck_or_graveyard_count_win_condition': {
+      if (answer.kind !== 'zone_target_select') return null;
+      const opponentSide = getOpponentSide(ctx.ownerSide);
+      const targets: { side: PlayerSide; zone: 'deck' | 'cemetery' }[] = [
+        { side: ctx.ownerSide, zone: 'deck' },
+        { side: ctx.ownerSide, zone: 'cemetery' },
+        { side: opponentSide, zone: 'deck' },
+        { side: opponentSide, zone: 'cemetery' },
+      ];
+      const target = targets[answer.selectedIndex];
+      if (!target) return null;
+
+      const count = getPlayerState(ctx.gameState, target.side)[target.zone]
+        .length;
+      if (!effect.targetValues.includes(count)) return [];
+
+      const sideLabel = target.side === ctx.ownerSide ? '自分' : '相手';
+      const zoneLabel = target.zone === 'deck' ? '山札' : '墓地';
+      return [
+        {
+          type: 'SET_GAME_STATUS',
+          payload: {
+            status: ctx.ownerSide === 'player' ? 'player_win' : 'opponent_win',
+            logMessage: `国の勝利条件が成立しました（${sideLabel}の${zoneLabel}が${count}枚）。`,
+          },
+        },
+      ];
+    }
+
+    // 【追加】究: 申告された山札構成(composition)と、相手の山札の実際の構成が
+    // 完全一致するかを判定する。一致すれば勝利、不一致なら相手の山札をシャッフルする。
+    case 'deck_predict_full_composition_win': {
+      if (answer.kind !== 'deck_composition_predict') return null;
+      const opponentSide = getOpponentSide(ctx.ownerSide);
+      const actualDeck = getPlayerState(ctx.gameState, opponentSide).deck;
+
+      const actualComposition: Record<string, number> = {};
+      actualDeck.forEach((c) => {
+        actualComposition[c.kanji] = (actualComposition[c.kanji] ?? 0) + 1;
+      });
+
+      const guessedEntries = Object.entries(answer.composition).filter(
+        ([, count]) => count > 0,
+      );
+      const actualEntries = Object.entries(actualComposition);
+      const isExactMatch =
+        guessedEntries.length === actualEntries.length &&
+        guessedEntries.every(
+          ([kanji, count]) => actualComposition[kanji] === count,
+        );
+
+      if (isExactMatch) {
+        const ownerLabel = ctx.ownerSide === 'player' ? '自分' : '相手';
+        return [
+          {
+            type: 'SET_GAME_STATUS',
+            payload: {
+              status:
+                ctx.ownerSide === 'player' ? 'player_win' : 'opponent_win',
+              logMessage: `${ownerLabel}の究の予想が的中し、勝利条件が成立しました。`,
+            },
+          },
+        ];
+      }
+
+      if (effect.onMiss.shuffleAfter) {
+        return [{ type: 'SHUFFLE_DECK', payload: { side: opponentSide } }];
+      }
+      return [];
     }
 
     // それ以外は今回未実装。describeSelectionRequirement側で既にnullを返しているため

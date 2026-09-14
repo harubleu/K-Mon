@@ -1,6 +1,6 @@
 // src/hooks/useGameState.ts
 
-import { useReducer, useState, useCallback } from 'react';
+import { useReducer, useState, useCallback, useEffect } from 'react';
 import type {
   GameState,
   GameAction,
@@ -12,6 +12,11 @@ import type {
   PlayerSide,
   PlayerState,
 } from '../types';
+import {
+  getPassiveList,
+  resolveSide,
+  getOpponentSide,
+} from '../utils/effectExecutor';
 
 // --- 追加: ログ生成・勝敗判定用ヘルパー関数 ---
 const createLog = (type: LogType, message: string): ActionLog => ({
@@ -107,6 +112,132 @@ const evaluateGameStatus = (
     };
   }
   return { status: 'playing' };
+};
+
+// 【追加・暮】graveyard_kanji_threshold_win。原文に「ターンがはじまるとき」等の時制表現が
+// 無く、常時条件として読める。かつ暮が成立させるのは所有者にとって有利な条件であり、
+// 山札0枚判定のように「不利な側の逆転猶予」を確保する必要がない。そのため即時判定とし、
+// あらゆるAction後の状態変化を(gameReducerの内部ではなく)useGameState側で一括検知する
+// (下記useEffect参照)。「5まいより多い」＝6枚以上(count > threshold)として判定する。
+const evaluateGraveyardThresholdWinConditions = (
+  state: GameState,
+): { status: GameStatus; logMessage: string } | null => {
+  if (state.gameStatus !== 'playing') return null;
+  for (const side of ['player', 'opponent'] as PlayerSide[]) {
+    const monsters = state[side].monsters;
+    for (const monster of monsters) {
+      if (monster.isFlipped) continue; // 表向き固定の永続効果のため
+      for (const passive of getPassiveList(monster)) {
+        if (passive.trigger !== 'graveyard_kanji_threshold_win') continue;
+        const count = state[side].cemetery.filter(
+          (c) => c.kanji === passive.targetKanji,
+        ).length;
+        if (count > passive.threshold) {
+          return {
+            status: side === 'player' ? 'player_win' : 'opponent_win',
+            logMessage: `${getSideLabel(side)}の「${monster.name || '暮'}」の勝利条件が成立しました（墓地の${passive.targetKanji}が${count}枚）。`,
+          };
+        }
+      }
+    }
+  }
+  return null;
+};
+
+// 【追加・浅/政】own_turn_start_win_condition(浅)・seeded_mana_return_win_condition(政)。
+// 原文に明示的な時制(「じぶんのターンがはじまる時」)があるため、NEXT_PHASEでのターン交代
+// 確定直後(nextTurnPlayerが確定した時点)にのみ判定する。浅・政のどちらかが成立した時点で
+// 判定を打ち切る(複数同時成立は現状考慮しない。既存のfindApplicable系ヘルパーと同じ方針)。
+const evaluateTurnStartCardWinConditions = (
+  state: GameState,
+  nextTurnPlayer: PlayerSide,
+): { status: GameStatus; logMessage: string } | null => {
+  const opponentOfNext = getOpponentSide(nextTurnPlayer);
+  const nextPlayerState = state[nextTurnPlayer];
+
+  // 浅（own_turn_start_win_condition）
+  for (const monster of nextPlayerState.monsters) {
+    if (monster.isFlipped) continue;
+    for (const passive of getPassiveList(monster)) {
+      if (passive.trigger !== 'own_turn_start_win_condition') continue;
+      const targetSide = resolveSide(passive.targetSide, nextTurnPlayer);
+      const count = state[targetSide].deck.length;
+      const met =
+        passive.comparator === 'less_than'
+          ? count < passive.threshold
+          : count > passive.threshold;
+      if (met) {
+        return {
+          status: nextTurnPlayer === 'player' ? 'player_win' : 'opponent_win',
+          logMessage: `${getSideLabel(nextTurnPlayer)}の「${monster.name || '浅'}」の勝利条件が成立しました。`,
+        };
+      }
+    }
+  }
+
+  // 政（seeded_mana_return_win_condition）。混入後は相手が引いて墓地送りにするまで
+  // 毎自ターン開始時に判定し続ける(消費・回数制限の概念なし)。
+  const opponentCemetery = state[opponentOfNext].cemetery;
+  const seiMonster = nextPlayerState.monsters.find(
+    (m) =>
+      !m.isFlipped &&
+      getPassiveList(m).some(
+        (p) => p.trigger === 'seeded_mana_return_win_condition',
+      ),
+  );
+  if (
+    seiMonster &&
+    opponentCemetery.some((c) => c.seededBy?.side === nextTurnPlayer)
+  ) {
+    return {
+      status: nextTurnPlayer === 'player' ? 'player_win' : 'opponent_win',
+      logMessage: `${getSideLabel(nextTurnPlayer)}の「${seiMonster.name || '政'}」の勝利条件が成立しました。`,
+    };
+  }
+
+  return null;
+};
+
+// 【追加・激】own_turn_end_predict_win。ドロー系Action(AUTO_DRAW/DRAW_REPLACE_FROM_GRAVEYARD)
+// の直後に呼ばれる。drawerSide(実際に引いた側)の相手が、表向きの激で予想を宣言していれば
+// 漢字を照合する。的中・不的中を問わず、判定後は必ず予想をクリアする(「次にひく」一回限りの
+// 予想のため)。的中していればgameStatusを更新する(既に決着済みなら上書きしない)。
+const applyPredictedDrawCheck = (
+  state: GameState,
+  drawerSide: PlayerSide,
+  drawnKanji: string,
+): GameState => {
+  const watcherSide = getOpponentSide(drawerSide);
+  const watcherState = state[watcherSide];
+  const monsterIndex = watcherState.monsters.findIndex(
+    (m) => !m.isFlipped && m.predictedDrawKanji !== undefined,
+  );
+  if (monsterIndex === -1) return state;
+
+  const monster = watcherState.monsters[monsterIndex];
+  const isHit = monster.predictedDrawKanji === drawnKanji;
+  const updatedMonsters = [...watcherState.monsters];
+  updatedMonsters[monsterIndex] = { ...monster, predictedDrawKanji: undefined };
+
+  const stateAfterClear: GameState = {
+    ...state,
+    [watcherSide]: { ...watcherState, monsters: updatedMonsters },
+  };
+
+  if (isHit && state.gameStatus === 'playing') {
+    return {
+      ...stateAfterClear,
+      gameStatus: watcherSide === 'player' ? 'player_win' : 'opponent_win',
+      logs: [
+        createLog(
+          'alert',
+          `${getSideLabel(watcherSide)}の「${monster.name || '激'}」の予想が的中し、勝利条件が成立しました。`,
+        ),
+        ...stateAfterClear.logs,
+      ],
+    };
+  }
+  return stateAfterClear;
 };
 // ----------------------------------------------------
 
@@ -275,41 +406,17 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const nextTurnCount =
         turnPlayer === 'opponent' ? turnCount + 1 : turnCount;
 
-      // 【追加・政】自ターンが始まる側(nextTurnPlayer)が政(seeded_mana_return_win_condition)を
-      // 持っており、かつ自分がマークしたカード(seededBy.side===nextTurnPlayer)が相手の墓地に
-      // 存在する場合、勝利条件が成立する。混入後は相手が引いて墓地送りにするまで毎自ターン
-      // 開始時にチェックし続ける(消費・回数制限の概念なし)。
-      // 【重要】判定ロジックはここまで実装するが、実際の勝敗(gameStatus)への反映は
-      // 外部の勝敗システム接続待ち(design_document.md「要:勝敗接続」グループと同枠、浅と同様)
-      // のため、現時点ではログ出力のみに留める(gameStatusは変更しない)。
-      const nextPlayerState = stateAfterReserve[nextTurnPlayer];
-      const opponentOfNextPlayer =
-        nextTurnPlayer === 'player' ? 'opponent' : 'player';
-      const opponentCemetery = stateAfterReserve[opponentOfNextPlayer].cemetery;
-      const hasSeiPassive = nextPlayerState.monsters.some((m) => {
-        const passives = Array.isArray(m.passiveEffect)
-          ? m.passiveEffect
-          : m.passiveEffect
-            ? [m.passiveEffect]
-            : [];
-        return passives.some(
-          (p) => p.trigger === 'seeded_mana_return_win_condition',
-        );
-      });
-      const seiWinConditionMet =
-        hasSeiPassive &&
-        opponentCemetery.some((c) => c.seededBy?.side === nextTurnPlayer);
-      const seiLogs: ActionLog[] = seiWinConditionMet
-        ? [
-            createLog(
-              'alert',
-              `${getSideLabel(nextTurnPlayer)}の政の勝利条件が成立しました（外部勝敗システム未接続のため実際の決着は保留）。`,
-            ),
-          ]
-        : [];
+      // 【変更・浅/政の勝敗接続】従来は政のみログ出力に留めていたが、evaluateTurnStartCardWinConditions
+      // (浅・政を統合)へ差し替え、実際にgameStatusを更新するよう格上げした。
+      const turnStartWinResult = evaluateTurnStartCardWinConditions(
+        stateAfterReserve,
+        nextTurnPlayer,
+      );
 
       const newLogs = [
-        ...seiLogs,
+        ...(turnStartWinResult
+          ? [createLog('alert', turnStartWinResult.logMessage)]
+          : []),
         createLog(
           'system',
           `ターン ${nextTurnCount} 開始 (${getSideLabel(nextTurnPlayer)}のターン)`,
@@ -317,6 +424,17 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ...reserveLogs,
         ...state.logs,
       ];
+
+      if (turnStartWinResult) {
+        return {
+          ...stateAfterReserve,
+          turnPlayer: nextTurnPlayer,
+          turnCount: nextTurnCount,
+          currentPhase: 'start',
+          gameStatus: turnStartWinResult.status,
+          logs: newLogs,
+        };
+      }
 
       return {
         ...stateAfterReserve,
@@ -379,7 +497,87 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ...state.logs,
       ];
 
-      return { ...nextState, logs: newLogs };
+      // 【追加・激】相手が表向きの激で予想を宣言していれば、引いた漢字と照合する。
+      return applyPredictedDrawCheck(
+        { ...nextState, logs: newLogs },
+        targetSide,
+        drawnCardWithoutTrap.kanji,
+      );
+    }
+
+    // 【追加・仁/花】draw_replace用。山札の代わりに、指定した墓地のカードをpendingDrawCardsへ
+    // 移動する。AUTO_DRAWと同様に「1枚をpendingへ」という結果になるため、既存の
+    // 「1枚ドロー確認」モーダル（PlayerZone.tsx）がそのまま流用できる。
+    case 'DRAW_REPLACE_FROM_GRAVEYARD': {
+      const { side, cardId } = action.payload;
+      const player = state[side];
+      const card = player.cemetery.find((c) => c.id === cardId);
+      if (!card) return state;
+
+      const nextState = {
+        ...state,
+        [side]: {
+          ...player,
+          cemetery: player.cemetery.filter((c) => c.id !== cardId),
+          pendingDrawCards: [...player.pendingDrawCards, card],
+        },
+      };
+
+      const newLogs = [
+        createLog(
+          'draw',
+          `${getSideLabel(side)}が墓地からマナ「${card.kanji}」を代わりにドローしました。`,
+        ),
+        ...state.logs,
+      ];
+
+      // 【追加・激】「墓地からひく場合も含む」(includeGraveyardDraw)対応。
+      return applyPredictedDrawCheck(
+        { ...nextState, logs: newLogs },
+        side,
+        card.kanji,
+      );
+    }
+
+    // 【追加・激】「ターンを終了」ボタン割り込みフロー(App.tsx)から、NEXT_PHASEの前に
+    // 予想する漢字を保存するためのAction。
+    case 'SET_PREDICTED_DRAW_KANJI': {
+      const { side, monsterIndex, kanji } = action.payload;
+      const player = state[side];
+      const target = player.monsters[monsterIndex];
+      if (!target) return state;
+
+      const updatedMonsters = [...player.monsters];
+      updatedMonsters[monsterIndex] = { ...target, predictedDrawKanji: kanji };
+
+      return {
+        ...state,
+        [side]: { ...player, monsters: updatedMonsters },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の「${target.name || `モンスター${monsterIndex + 1}`}」が相手の次のドローを「${kanji}」と予想しました。`,
+          ),
+          ...state.logs,
+        ],
+      };
+    }
+
+    // 【追加・暮/浅/政/激の勝敗接続共通】カード効果由来の勝利条件成立をgameStatusへ反映する。
+    // 既に決着済みの場合は上書きしない(evaluateGameStatusの早期returnと同じ防御方針)。
+    case 'SET_GAME_STATUS': {
+      if (state.gameStatus !== 'playing') return state;
+      return {
+        ...state,
+        gameStatus: action.payload.status,
+        logs: [
+          createLog(
+            'alert',
+            action.payload.logMessage ?? '勝利条件が成立しました。',
+          ),
+          ...state.logs,
+        ],
+      };
     }
 
     case 'EQUIP_MANA': {
@@ -1111,6 +1309,24 @@ export const useGameState = () => {
 
     dispatch({ type: 'RESTORE_STATE', payload: nextState });
   }, [future, gameState]);
+
+  // 【追加・暮】あらゆるAction後の状態変化を検知し、即時に勝利条件をチェックする。
+  // TRASH_MANA/MOVE_CARD_BETWEEN_ZONES/DAMAGE等、墓地枚数を変化させ得るAction個別に
+  // フックを追加する（保修正前の「あちこちで判定」構造の再導入）のではなく、
+  // gameState全体の変化を単一のuseEffectで監視することで判定ロジックを1箇所に集約する。
+  // 履歴(Undo/Redo)には積まない生のdispatch(useReducer由来)を使う。これは「プレイヤーが
+  // 選んだ操作」ではなく、直前の操作に不可分な自動的な結果として扱うため
+  // (pendingDrawCards絡みの操作を履歴から除外している既存の isPendingAction 判定と同じ考え方)。
+  useEffect(() => {
+    if (gameState.gameStatus !== 'playing') return;
+    const result = evaluateGraveyardThresholdWinConditions(gameState);
+    if (result) {
+      dispatch({
+        type: 'SET_GAME_STATUS',
+        payload: { status: result.status, logMessage: result.logMessage },
+      });
+    }
+  }, [gameState]);
 
   return {
     gameState,

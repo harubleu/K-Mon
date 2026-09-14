@@ -14,6 +14,11 @@ import { Card } from '../Card';
 interface PickupSelectModalProps {
   isOpen: boolean;
   candidates: { id: string; kanji: string; reading: string }[];
+  // 【追加・仁】このモーダルを仁の「墓地からドローするマナを選ぶ」UIとしても流用するため、
+  // 表示文言をprops化した。未指定時は拾用の既存文言のまま(呼び出し元の無変更を維持)。
+  title?: string;
+  description?: string;
+  confirmLabel?: string;
   onConfirm: (selectedCardId: string) => void;
   onCancel: () => void;
 }
@@ -21,6 +26,9 @@ interface PickupSelectModalProps {
 export const PickupSelectModal: React.FC<PickupSelectModalProps> = ({
   isOpen,
   candidates,
+  title = '拾の発動：装備するマナを選択',
+  description = '相手の効果で墓地へ送られたマナカードの中から1枚選び、装備します。',
+  confirmLabel = 'このマナを装備する',
   onConfirm,
   onCancel,
 }) => {
@@ -82,10 +90,8 @@ export const PickupSelectModal: React.FC<PickupSelectModalProps> = ({
           boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
         }}
       >
-        <h2 style={{ marginTop: 0 }}>拾の発動：装備するマナを選択</h2>
-        <p style={{ fontSize: '0.9rem', color: '#666' }}>
-          相手の効果で墓地へ送られたマナカードの中から1枚選び、装備します。
-        </p>
+        <h2 style={{ marginTop: 0 }}>{title}</h2>
+        <p style={{ fontSize: '0.9rem', color: '#666' }}>{description}</p>
 
         <div
           style={{
@@ -154,7 +160,7 @@ export const PickupSelectModal: React.FC<PickupSelectModalProps> = ({
               cursor: selectedId ? 'pointer' : 'not-allowed',
             }}
           >
-            このマナを装備する
+            {confirmLabel}
           </button>
         </div>
       </div>
