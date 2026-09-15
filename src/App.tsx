@@ -609,6 +609,7 @@ export const App: React.FC = () => {
       monsters: gameState[req.side].monsters,
       constraint: req.constraint,
       excludeMonsterIndex: req.excludeMonsterIndex,
+      disabledMonsters: req.disabledMonsters,
       onConfirm: (selectedMonsterIndexes: number[]) =>
         confirmSelection({ kind: 'monster_select', selectedMonsterIndexes }),
       onCancel: cancelSelection,
@@ -900,6 +901,7 @@ export const App: React.FC = () => {
             monsters={monsterSelectProps?.monsters ?? []}
             constraint={monsterSelectProps?.constraint ?? { min: 0, max: 0 }}
             excludeMonsterIndex={monsterSelectProps?.excludeMonsterIndex}
+            disabledMonsters={monsterSelectProps?.disabledMonsters}
             onConfirm={monsterSelectProps?.onConfirm ?? (() => {})}
             onCancel={monsterSelectProps?.onCancel ?? (() => {})}
           />

@@ -11,6 +11,7 @@
 import type {
   GameAction,
   GameState,
+  MonsterCard,
   MonsterEffect,
   PlayerSide,
   ZoneType,
@@ -94,6 +95,10 @@ export interface MonsterSelectRequirement {
   constraint: { min: number; max: number };
   // 【追加】候補から除外するモンスターのindex（生・方の「このカードにはつけられない」用）
   excludeMonsterIndex?: number;
+  // 【今回追加】isRemovedFromGame等、候補には出すがクリック不可にするモンスター一覧。
+  // 理由(reason)を持たせているのは、excludeMonsterIndex(発動元自身)とグレーアウトの
+  // 表示理由をUI側で出し分けるため。現状はremoved_from_gameの1種類のみ。
+  disabledMonsters?: { index: number; reason: 'removed_from_game' }[];
 }
 
 // --- 刃・屍・死・葬: 数値を選ぶケース ---
@@ -157,6 +162,22 @@ export type SelectionRequirement =
   | PickupSelectRequirement
   | ZoneTargetSelectRequirement
   | DeckCompositionPredictRequirement;
+
+// 【今回追加】isRemovedFromGame横断フィルタ:
+// monster_selectを発行する箇所は必ずこのヘルパーを経由し、disabledMonstersを算出する。
+// デフォルトはisRemovedFromGame===trueの全モンスターを無効化対象に含める。
+// 「操」(copy_opponent_monster_effect)のみ例外: 相手モンスターの状態を隠さず全て候補に
+// 出す既存方針(design書7.29.1節で確定済み)のため、常に空配列を返す。
+function getDisabledMonstersForSelect(
+  effectId: MonsterEffect['effectId'],
+  monsters: MonsterCard[],
+): { index: number; reason: 'removed_from_game' }[] {
+  if (effectId === 'copy_opponent_monster_effect') return [];
+  return monsters
+    .map((monster, index) => ({ monster, index }))
+    .filter(({ monster }) => monster.isRemovedFromGame === true)
+    .map(({ index }) => ({ index, reason: 'removed_from_game' as const }));
+}
 
 /**
  * resolveMonsterEffectがnullを返した効果に対して、既存UIへの誘導が可能か判定する。
@@ -256,6 +277,10 @@ export function describeSelectionRequirement(
             effect.monsterTargetMode === 'exclude_self'
               ? ctx.sourceMonsterIndex
               : undefined,
+          disabledMonsters: getDisabledMonstersForSelect(
+            effect.effectId,
+            getPlayerState(ctx.gameState, ctx.ownerSide).monsters,
+          ),
         };
       }
 
@@ -403,6 +428,11 @@ export function describeSelectionRequirement(
         kind: 'monster_select',
         side,
         constraint: { min: 1, max: 1 },
+        // 操は例外的に無効化しない(getDisabledMonstersForSelectが空配列を返す)。
+        disabledMonsters: getDisabledMonstersForSelect(
+          effect.effectId,
+          getPlayerState(ctx.gameState, side).monsters,
+        ),
       };
     }
 
@@ -412,6 +442,10 @@ export function describeSelectionRequirement(
         kind: 'monster_select',
         side,
         constraint: { min: effect.count, max: effect.count },
+        disabledMonsters: getDisabledMonstersForSelect(
+          effect.effectId,
+          getPlayerState(ctx.gameState, side).monsters,
+        ),
       };
     }
 
@@ -424,6 +458,10 @@ export function describeSelectionRequirement(
         side: ctx.ownerSide,
         constraint: { min: 1, max: 1 },
         excludeMonsterIndex: ctx.sourceMonsterIndex,
+        disabledMonsters: getDisabledMonstersForSelect(
+          effect.effectId,
+          getPlayerState(ctx.gameState, ctx.ownerSide).monsters,
+        ),
       };
     }
 
@@ -564,6 +602,10 @@ export function describeSelectionRequirement(
         kind: 'monster_select',
         side,
         constraint: { min: effect.count, max: effect.count },
+        disabledMonsters: getDisabledMonstersForSelect(
+          effect.effectId,
+          getPlayerState(ctx.gameState, side).monsters,
+        ),
       };
     }
 

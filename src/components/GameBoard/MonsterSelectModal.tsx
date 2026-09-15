@@ -11,6 +11,10 @@ interface MonsterSelectModalProps {
   constraint: { min: number; max: number };
   // 【追加】生・方の「このカードにはつけられない」用。このindexのモンスターは選択不可にする
   excludeMonsterIndex?: number;
+  // 【今回追加】isRemovedFromGame等、候補には出すがクリック不可にするモンスター一覧。
+  // excludeMonsterIndex(発動元自身)とは無効化の「理由」が異なるため、
+  // グレーアウトのラベルを出し分ける。
+  disabledMonsters?: { index: number; reason: 'removed_from_game' }[];
   onConfirm: (selectedMonsterIndexes: number[]) => void;
   onCancel: () => void;
 }
@@ -20,6 +24,7 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
   monsters,
   constraint,
   excludeMonsterIndex,
+  disabledMonsters,
   onConfirm,
   onCancel,
 }) => {
@@ -27,8 +32,16 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
 
   if (!isOpen) return null;
 
+  const getDisabledReason = (
+    index: number,
+  ): 'exclude_self' | 'removed_from_game' | null => {
+    if (index === excludeMonsterIndex) return 'exclude_self';
+    const hit = disabledMonsters?.find((d) => d.index === index);
+    return hit ? hit.reason : null;
+  };
+
   const toggle = (index: number) => {
-    if (index === excludeMonsterIndex) return;
+    if (getDisabledReason(index) !== null) return;
     setSelected((prev) =>
       prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index],
     );
@@ -77,23 +90,31 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {monsters.map((monster, index) => {
             const isSelected = selected.includes(index);
-            const isExcluded = index === excludeMonsterIndex;
+            const disabledReason = getDisabledReason(index);
+            const isDisabled = disabledReason !== null;
             return (
               <button
                 key={monster.id}
                 onClick={() => toggle(index)}
-                disabled={isExcluded}
+                disabled={isDisabled}
+                title={
+                  disabledReason === 'exclude_self'
+                    ? 'このカードにはつけられません'
+                    : disabledReason === 'removed_from_game'
+                      ? 'ゲームから取り除かれています'
+                      : undefined
+                }
                 style={{
                   padding: '10px',
-                  cursor: isExcluded ? 'not-allowed' : 'pointer',
+                  cursor: isDisabled ? 'not-allowed' : 'pointer',
                   border: isSelected ? '3px solid #007bff' : '1px solid #ccc',
                   borderRadius: '6px',
-                  backgroundColor: isExcluded
+                  backgroundColor: isDisabled
                     ? '#f0f0f0'
                     : isSelected
                       ? '#e6f0ff'
                       : '#fff',
-                  opacity: isExcluded ? 0.5 : 1,
+                  opacity: isDisabled ? 0.5 : 1,
                   textAlign: 'left',
                 }}
               >
@@ -109,7 +130,7 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
                     (すでに裏面)
                   </span>
                 )}
-                {isExcluded && (
+                {disabledReason === 'exclude_self' && (
                   <span
                     style={{
                       fontSize: '0.75rem',
@@ -118,6 +139,17 @@ export const MonsterSelectModal: React.FC<MonsterSelectModalProps> = ({
                     }}
                   >
                     (このカードにはつけられない)
+                  </span>
+                )}
+                {disabledReason === 'removed_from_game' && (
+                  <span
+                    style={{
+                      fontSize: '0.75rem',
+                      color: '#c00',
+                      marginLeft: '8px',
+                    }}
+                  >
+                    (ゲームから取り除き済み)
                   </span>
                 )}
               </button>
