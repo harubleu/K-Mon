@@ -48,6 +48,26 @@ export function getPlayerState(
   return side === 'player' ? gameState.player : gameState.opponent;
 }
 
+// 【今回追加・泊】ownerSide(効果を発動しようとしている側)が、相手の泊によって
+// 現在無効化されているかを判定する。泊は相手モンスターの表向き固定の永続効果で
+// あり、disabledOpponentTurnsRemainingが立っている(FLIP_MONSTER時にセットされ、
+// NEXT_PHASE毎に消費される)間、ownerSide側のモンスター効果は原文通り「発動は
+// するが効果は無効」になる(ユーザー確認済みQA)。相手が複数の泊を持っていても、
+// 1体でも無効化中なら丸ごと無効とする(原文・FAQに複数泊の重複効果の記載が無いため
+// 単純な「いずれかが有効なら無効化」で扱う)。
+export function isMonsterEffectsDisabledByOpponentBan(
+  gameState: GameState,
+  ownerSide: PlayerSide,
+): boolean {
+  const opponentMonsters = getPlayerState(
+    gameState,
+    getOpponentSide(ownerSide),
+  ).monsters;
+  return opponentMonsters.some(
+    (m) => !m.isFlipped && (m.disabledOpponentTurnsRemaining ?? 0) > 0,
+  );
+}
+
 // 指定サイドの山札の「上からN枚」のカードIDを返す（山札の残数がN未満なら残り全部）。
 // 山札配列のindex 0が先頭（山札の一番上）という既存のREORDER_DECK等の実装規約に準拠。
 function takeTopDeckIds(
@@ -159,11 +179,41 @@ interface DeckReduceIntent {
 
 // passiveEffectは単体/配列どちらもあり得るため配列に正規化する
 // 【変更】暮/浅/政/激の勝敗接続、および仁/花のdraw_replaceからも参照するためexportする。
+// 【今回追加・isRemovedFromGame横断フィルタ】ゲームから取り除かれたモンスター
+// (isRemovedFromGame:true)は、装備マナが全て墓地送りになった時点で盤面から実質的に
+// 「いなくなった」ものとして扱うべきであり、以後どの永続パッシブも判定対象から
+// 除外する。この関数を全ての永続パッシブ参照箇所(勝敗接続系・割り込みパイプライン・
+// own_turn_start判定・draw_replace探索等)が共通で経由するため、ここ1箇所に
+// ガードを集約するだけで全箇所に波及する(個別箇所へのisRemovedFromGameチェック
+// 追加を避け、対応漏れのリスクを無くす設計)。
 export function getPassiveList(monster: MonsterCard): PassiveEffect[] {
+  if (monster.isRemovedFromGame) return [];
   if (!monster.passiveEffect) return [];
   return Array.isArray(monster.passiveEffect)
     ? monster.passiveEffect
     : [monster.passiveEffect];
+}
+
+// 【今回追加・泊】山札減少/マナ破棄の永続パッシブ割り込みパイプライン
+// (applyDeckReducePassives/applyManaTrashPassives内の各判定関数)専用のゲート付き版。
+// side(そのモンスターの所有側)が相手の泊で無効化されている間は、getPassiveListと
+// 同じisRemovedFromGameガードに加えて空配列を返す(「発動はするが効果は無効」)。
+// 【対象外(意図的)】以下は泊の無効化対象に含めない:
+//   - getActivatableEffect(発動ボタンの活性判定自体): ユーザー確認済みの方針
+//     「発動ボタン自体は押せる」により、通常のgetPassiveListのまま変更しない。
+//   - own_turn_start判定・勝敗接続系(暮/浅/政/激)・draw_replace(仁/花)探索:
+//     Q&Aで言及された範囲は「山札を減らす/マナが墓地へ送られる」割り込み
+//     パイプラインのみのため、今回はそのスコープに限定する(継続課題として6章に
+//     記録: 泊の無効化範囲をこれら他の永続効果にも広げるかは未確認)。
+//   - FLIP_MONSTER内の泊自身の発動判定: 泊自身がこのゲートの対象になると、
+//     泊が永遠に発動できなくなる自己言及的な矛盾が生じるため対象外。
+function getPassiveListGatedByBan(
+  monster: MonsterCard,
+  gameState: GameState,
+  side: PlayerSide,
+): PassiveEffect[] {
+  if (isMonsterEffectsDisabledByOpponentBan(gameState, side)) return [];
+  return getPassiveList(monster);
 }
 
 function isPassiveConsumed(
@@ -180,11 +230,13 @@ function sumBoostAmount(gameState: GameState, actingSide: PlayerSide): number {
   const monsters = getPlayerState(gameState, actingSide).monsters;
   let total = 0;
   monsters.forEach((monster) => {
-    getPassiveList(monster).forEach((passive) => {
-      if (passive.trigger !== 'boost_own_deck_reduce_effect') return;
-      if (passive.scope && !passive.scope.includes('deck')) return;
-      total += passive.extraCount;
-    });
+    getPassiveListGatedByBan(monster, gameState, actingSide).forEach(
+      (passive) => {
+        if (passive.trigger !== 'boost_own_deck_reduce_effect') return;
+        if (passive.scope && !passive.scope.includes('deck')) return;
+        total += passive.extraCount;
+      },
+    );
   });
   return total;
 }
@@ -198,10 +250,12 @@ function sumMitigateAmount(
   const monsters = getPlayerState(gameState, targetSide).monsters;
   let total = 0;
   monsters.forEach((monster) => {
-    getPassiveList(monster).forEach((passive) => {
-      if (passive.trigger === 'mitigate_deck_reduce_effect')
-        total += passive.amount;
-    });
+    getPassiveListGatedByBan(monster, gameState, targetSide).forEach(
+      (passive) => {
+        if (passive.trigger === 'mitigate_deck_reduce_effect')
+          total += passive.amount;
+      },
+    );
   });
   return total;
 }
@@ -224,7 +278,7 @@ function findApplicableRedirect(
   const monsters = getPlayerState(gameState, actingSide).monsters;
   for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
     const monster = monsters[monsterIndex];
-    const passives = getPassiveList(monster);
+    const passives = getPassiveListGatedByBan(monster, gameState, actingSide);
     for (let passiveIndex = 0; passiveIndex < passives.length; passiveIndex++) {
       const passive = passives[passiveIndex];
       if (passive.trigger !== 'redirect_own_deck_reduce') continue;
@@ -261,7 +315,7 @@ function findApplicableBlock(
   const monsters = getPlayerState(gameState, targetSide).monsters;
   for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
     const monster = monsters[monsterIndex];
-    const passives = getPassiveList(monster);
+    const passives = getPassiveListGatedByBan(monster, gameState, targetSide);
     for (let passiveIndex = 0; passiveIndex < passives.length; passiveIndex++) {
       if (passives[passiveIndex].trigger !== 'block_next_deck_reduce_effect')
         continue;
@@ -287,7 +341,11 @@ function findApplicableReplace(
 ): ReplaceMatch | null {
   const monsters = getPlayerState(gameState, actingSide).monsters;
   for (const monster of monsters) {
-    for (const passive of getPassiveList(monster)) {
+    for (const passive of getPassiveListGatedByBan(
+      monster,
+      gameState,
+      actingSide,
+    )) {
       if (passive.trigger === 'replace_own_effect_opponent_reduce') {
         return {
           selfCost: passive.selfCost,
@@ -422,13 +480,46 @@ export function applyDeckReducePassives(
     if (amount > 0 && targetSide === getOpponentSide(actingSide)) {
       const replace = findApplicableReplace(gameState, actingSide);
       if (replace) {
+        // 【今回改訂】注のselfCost(自分-1)は、自分側が浮等のmitigateを持っていても
+        // 軽減対象にしない(原文に記載が無いため固定値のまま、design書6章の既存方針を踏襲)。
         const selfAction = buildDeckReduceAction(gameState, {
           targetSide: actingSide,
           amount: replace.selfCost,
           destination: intent.destination,
         });
         if (selfAction) result.push(selfAction);
-        amount = replace.opponentCount;
+
+        // 【今回改訂・重大】注の発動によって生じる相手側への減少(opponentCount)も、
+        // 「山札を減らす効果」の一種として扱い、改めて相手側のmitigate/blockを適用する
+        // (ユーザー確認済み)。直前(430行目以前)のsumMitigateAmount/findApplicableBlockは
+        // 「注が発動する前の、置換前の山札減少」に対する判定であり、注が生み出す
+        // 「新しい山札減少(opponentCount)」にはまだ一切適用されていないため、
+        // ここで改めて適用しても二重軽減・二重消費にはならない。
+        amount = Math.max(
+          0,
+          replace.opponentCount - sumMitigateAmount(gameState, targetSide),
+        );
+        if (amount > 0) {
+          const block = findApplicableBlock(gameState, targetSide);
+          if (block) {
+            amount = 0;
+            consumptions.push({
+              type: 'CONSUME_PASSIVE_EFFECT',
+              payload: {
+                side: targetSide,
+                monsterIndex: block.monsterIndex,
+                passiveIndex: block.passiveIndex,
+              },
+            });
+            consumptions.push({
+              type: 'FLIP_MONSTER',
+              payload: {
+                side: targetSide,
+                monsterIndex: block.monsterIndex,
+              },
+            });
+          }
+        }
       }
     }
 
@@ -476,9 +567,11 @@ function findApplicableShield(
   const monsters = getPlayerState(gameState, targetSide).monsters;
   for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
     const monster = monsters[monsterIndex];
-    const hasShieldPassive = getPassiveList(monster).some(
-      (p) => p.trigger === 'shield_counter_deck_protection',
-    );
+    const hasShieldPassive = getPassiveListGatedByBan(
+      monster,
+      gameState,
+      targetSide,
+    ).some((p) => p.trigger === 'shield_counter_deck_protection');
     if (!hasShieldPassive) continue;
     const buffer = monster.reservedCards ?? [];
     if (buffer.length === 0) continue;
@@ -495,7 +588,7 @@ function hasApplicableNegate(
 ): boolean {
   const monsters = getPlayerState(gameState, targetSide).monsters;
   return monsters.some((monster) =>
-    getPassiveList(monster).some(
+    getPassiveListGatedByBan(monster, gameState, targetSide).some(
       (p) => p.trigger === 'negate_own_mana_trash_by_opponent',
     ),
   );
@@ -575,7 +668,7 @@ export function applyManaTrashPassives(
       gameState,
       targetSide,
     ).monsters.findIndex((monster) =>
-      getPassiveList(monster).some(
+      getPassiveListGatedByBan(monster, gameState, targetSide).some(
         (p) => p.trigger === 'own_mana_trashed_by_opponent_reaction',
       ),
     );
@@ -626,17 +719,40 @@ export function getActivatableEffect(
   const isOwnStartPhase =
     gameState.currentPhase === 'start' && gameState.turnPlayer === ownerSide;
 
-  if (isOwnStartPhase && monster.passiveEffect) {
-    const passives = Array.isArray(monster.passiveEffect)
-      ? monster.passiveEffect
-      : [monster.passiveEffect];
-    const startTrigger = passives.find(
+  if (isOwnStartPhase) {
+    const startTrigger = getPassiveList(monster).find(
       (p): p is Extract<PassiveEffect, { trigger: 'own_turn_start' }> =>
         p.trigger === 'own_turn_start',
     );
     if (startTrigger) return startTrigger.action;
   }
 
+  // 【今回追加・isRemovedFromGame横断フィルタ】取り除かれたモンスター自身の発動ボタンは
+  // 既にMonsterZone.tsx側でdisabled化されているが(design書3.2章)、念のためgetActivatableEffect
+  // 自体でも二重にガードしておく(呼び出し元が将来増えた場合の安全策)。
+  if (monster.isRemovedFromGame) return null;
+
+  // 【表面固定永続効果の発動ガード】囲・政は「このカードはおもてむきの
+  // ままにする」永続効果を持ち、monster.effectは前準備発動として1回限りである
+  // (発動時にFLIP_MONSTERを伴わせる設計、effectSelection.ts参照)。
+  // isFlipped:true(裏向き=発動済み)の間は、effectを発動対象から除外する。
+  // 【保は対象外】保も同種の永続効果だが、山札0枚時の自動返却処理
+  // (useGameState.tsのreturnReservedCardsIfDeckEmpty)が「!m.isFlipped(表向き)」を
+  // 対象探索の条件にしているため、発動時に裏向き化すると自動返却が機能しなくなる
+  // 致命的な矛盾が生じる。そのため保は従来通り「発動後も表向きのまま」を維持し、
+  // 発動ガードの対象から意図的に除外している(ユーザー確認済み、継続課題として
+  // 6章に記録: 保の発動ボタン自体は繰り返し押せる状態が残る)。
+  const FACE_UP_LOCKED_EFFECT_IDS = new Set<string>([
+    'graveyard_partial_to_reserve', // 囲
+    'deck_seed_mana_win_condition', // 政
+  ]);
+  if (
+    monster.effect &&
+    FACE_UP_LOCKED_EFFECT_IDS.has(monster.effect.effectId) &&
+    monster.isFlipped
+  ) {
+    return null;
+  }
   return monster.effect ?? null;
 }
 
@@ -685,6 +801,9 @@ export interface ExecutorContext {
   // 【追加・生方のexcludeSelf対応】phase1(monster_select)で選ばれた装備先モンスターのindex。
   // phase2(graveyard_select_equipの実処理)でsourceMonsterIndexの代わりに使う。
   equipTargetMonsterIndex?: number;
+  // 【今回追加・美】targetSide:'choose'のphase1(zone_target_select、2択)で選ばれた対象side。
+  // phase2(deck_reorder本体)ではこちらをsideとして使う。
+  reorderTargetSide?: PlayerSide;
 }
 
 /**
@@ -697,6 +816,15 @@ export function resolveMonsterEffect(
 ): GameAction[] | null {
   const { ownerSide, gameState } = ctx;
   const opponentSide = getOpponentSide(ownerSide);
+
+  // 【今回追加・泊】相手の泊で無効化中の場合、「発動はするが効果は無効」
+  // (ユーザー確認済みQA)。選択が不要な効果(resolveMonsterEffectの対象)は、
+  // 発動ボタンは押せる(getActivatableEffectは変更しない)が、実際のGameActionは
+  // 空にする。nullではなく空配列[]を返す点に注意(nullは選択UIへの誘導を意味する
+  // 既存の意味論のため、無効化時にnullを返すと誤って選択誘導フローに乗ってしまう)。
+  if (isMonsterEffectsDisabledByOpponentBan(gameState, ownerSide)) {
+    return [];
+  }
 
   switch (effect.effectId) {
     case 'deck_reduce_fixed': {
@@ -1046,12 +1174,15 @@ export function resolveMonsterEffect(
     }
 
     case 'swap_deck_and_graveyard': {
-      // 自分の山札全体と墓地全体を、それぞれの現在の順序を保ったまま丸ごと入れ替える（逆）。
-      // 既存のMOVE_CARD_BETWEEN_ZONESは「山札の先頭からN枚」等の部分移動しか想定しておらず、
-      // 山札・墓地を丸ごと入れ替える操作を安全に組み立てられない。
-      // 新規Action（例: SWAP_ZONES）の追加が必要なため、別途提案してから実装する
-      // （llm_development_guideline.md 1.1章の既存Action変更ルールに準拠）。
-      return null;
+      // 【今回実装】自分の山札全体と墓地全体を、それぞれの現在の順序を保ったまま
+      // 丸ごと入れ替える(逆)。新規Action SWAP_ZONESで実装(型定義・reducer側の反転処理は
+      // useGameState.tsのSWAP_ZONESケースを参照)。
+      // FAQ確定事項:「逆による増減は効果による墓地送りとして扱わない」ため、本来は
+      // 永続パッシブ割り込みパイプラインを経由してはならない。ただしSWAP_ZONESは
+      // extractDeckReduceIntent/applyManaTrashPassivesのどちらの対象Action型
+      // (DAMAGE/MOVE_CARD_BETWEEN_ZONES/TRASH_MANA)にも該当しないため、
+      // 両パイプラインとも自動的に素通りする(実質的に対応済み、追加のガード不要)。
+      return [{ type: 'SWAP_ZONES', payload: { side: ownerSide } }];
     }
 
     case 'deck_normalize_to_count': {

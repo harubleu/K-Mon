@@ -60,6 +60,11 @@ export interface PendingSelection {
   // 【追加・生方のexcludeSelf対応】phase2(graveyard_select)確定時にbuildActionsFromSelectionへ
   // 渡す装備先モンスターのindex。phase1(monster_select)確定時にセットされる。
   equipTargetMonsterIndex?: number;
+  // 【今回追加・美】phase1(zone_target_select、2択)確定後、phase2(deck_reorder本体)へ渡す対象side。
+  reorderTargetSide?: PlayerSide;
+  // 【今回追加・並/詳のtargetSide:'both'】1巡目(ctx.ownerSide)確定後、
+  // 2巡目として続けて開始する対象side(常に相手側)。出のdeckCompareBranchPendingと同型。
+  reorderBothPending?: PlayerSide;
   // 【追加・拾】このpendingSelectionが拾の割り込み反応であることを示すフラグ。
   // trueの場合、effectフィールドはダミー値(実際には参照されない)で、
   // confirmSelection側で専用分岐として処理する。
@@ -304,6 +309,29 @@ export const useEffectExecutor = (
       return true;
     }
 
+    // 【今回追加】並・詳(targetSide:'both')の1巡目: 確定後、相手側を対象に2巡目を
+    // 続けて開始するようマークする。出のdeck_compare_branchと同じ「PendingSelectionに
+    // 次巡の対象を持たせる」方式(ただし並・詳は同数判定等が無いため、常に2巡実行する)。
+    if (
+      (effect.effectId === 'deck_full_reorder' ||
+        effect.effectId === 'deck_partial_reorder') &&
+      effect.targetSide === 'both'
+    ) {
+      const requirement = describeSelectionRequirement(effect, ctx);
+      if (requirement === null) {
+        setPendingSelection(null);
+        return false;
+      }
+      setPendingSelection({
+        requirement,
+        effect,
+        ownerSide,
+        sourceMonsterIndex,
+        reorderBothPending: getOpponentSide(ownerSide),
+      });
+      return true;
+    }
+
     if (effect.effectId === 'sequence') {
       return trySequenceFrom(
         effect.steps,
@@ -392,6 +420,43 @@ export const useEffectExecutor = (
           resume.justTrashedCardIds,
         );
       }
+      return;
+    }
+
+    // 【今回追加・美】targetSide:'choose'のphase1(zone_target_select、2択)確定時。
+    // まだActionを組み立てず、選ばれたsideを載せてphase2(deck_reorder本体)へ進む。
+    if (
+      pendingSelection.effect.effectId === 'deck_partial_reorder' &&
+      pendingSelection.effect.targetSide === 'choose' &&
+      pendingSelection.requirement.kind === 'zone_target_select' &&
+      answer.kind === 'zone_target_select'
+    ) {
+      // describeSelectionRequirement側の選択肢順「自分の山札／相手の山札」に対応
+      const reorderTargetSide =
+        answer.selectedIndex === 0
+          ? pendingSelection.ownerSide
+          : getOpponentSide(pendingSelection.ownerSide);
+      const phase2Ctx = {
+        ownerSide: pendingSelection.ownerSide,
+        gameState,
+        sourceMonsterIndex: pendingSelection.sourceMonsterIndex,
+        reorderTargetSide,
+      };
+      const phase2Requirement = describeSelectionRequirement(
+        pendingSelection.effect,
+        phase2Ctx,
+      );
+      if (phase2Requirement === null) {
+        setPendingSelection(null);
+        return;
+      }
+      setPendingSelection({
+        requirement: phase2Requirement,
+        effect: pendingSelection.effect,
+        ownerSide: pendingSelection.ownerSide,
+        sourceMonsterIndex: pendingSelection.sourceMonsterIndex,
+        reorderTargetSide,
+      });
       return;
     }
 
@@ -485,6 +550,7 @@ export const useEffectExecutor = (
       justTrashedCardIds: pendingSelection.sequenceContext?.justTrashedCardIds,
       forcedSide: pendingSelection.forcedSide,
       equipTargetMonsterIndex: pendingSelection.equipTargetMonsterIndex,
+      reorderTargetSide: pendingSelection.reorderTargetSide,
     };
     const actions = buildActionsFromSelection(
       pendingSelection.effect,
@@ -539,6 +605,36 @@ export const useEffectExecutor = (
         ownerSide: pendingSelection.ownerSide,
         sourceMonsterIndex: pendingSelection.sourceMonsterIndex,
         forcedSide: nextSide,
+      });
+      return;
+    }
+
+    // 【今回追加】並・詳(targetSide:'both')、1巡目確定後の処理。
+    // dispatchしてから、相手側を対象に2巡目を開始する(出のdeckCompareBranchPendingと同型)。
+    if (pendingSelection.reorderBothPending) {
+      if (actions) dispatchWithPassives(actions, pendingSelection.ownerSide);
+      const nextSide = pendingSelection.reorderBothPending;
+      const nextCtx = {
+        ownerSide: pendingSelection.ownerSide,
+        gameState,
+        sourceMonsterIndex: pendingSelection.sourceMonsterIndex,
+        forcedSide: nextSide,
+      };
+      const nextRequirement = describeSelectionRequirement(
+        pendingSelection.effect,
+        nextCtx,
+      );
+      if (nextRequirement === null) {
+        setPendingSelection(null);
+        return;
+      }
+      setPendingSelection({
+        requirement: nextRequirement,
+        effect: pendingSelection.effect,
+        ownerSide: pendingSelection.ownerSide,
+        sourceMonsterIndex: pendingSelection.sourceMonsterIndex,
+        forcedSide: nextSide,
+        // reorderBothPendingは付けない(2巡目で終了、3巡目には進まない)
       });
       return;
     }

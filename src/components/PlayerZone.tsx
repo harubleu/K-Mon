@@ -457,12 +457,19 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
 
               <button
                 onClick={() => {
+                  // 【今回修正】仁・花のdraw_replace由来(pendingDrawSource:'graveyard')の
+                  // カードは、キャンセル時に本来の送り元である墓地へ戻す。
+                  // 通常のAUTO_DRAW由来(pendingDrawSource未設定)は従来通り山札へ戻す。
+                  const source = playerState.pendingDrawCards[0];
                   onMoveCards({
                     sourceSide: side,
                     targetSide: side,
-                    cardIds: [playerState.pendingDrawCards[0].id],
+                    cardIds: [source.id],
                     sourceZone: 'pending',
-                    targetZone: 'deck',
+                    targetZone:
+                      source.pendingDrawSource === 'graveyard'
+                        ? 'cemetery'
+                        : 'deck',
                   });
                 }}
                 style={{
@@ -475,7 +482,12 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
                   fontWeight: 'bold',
                 }}
               >
-                キャンセル（山札の上に戻す）
+                キャンセル（
+                {playerState.pendingDrawCards[0].pendingDrawSource ===
+                'graveyard'
+                  ? '墓地に戻す'
+                  : '山札の上に戻す'}
+                ）
               </button>
             </div>
           </div>

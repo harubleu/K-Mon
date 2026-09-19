@@ -9,6 +9,10 @@ interface DraggableManaProps {
   side: PlayerSide;
   sourceZone: ZoneType;
   children?: React.ReactNode;
+  // 【今回追加】効果選択モード中の誤ドラッグ防止用。trueの間はドラッグ開始自体を
+  // 無効化する(dnd-kitのuseDraggable標準オプション。disabled:trueの間listenersは
+  // undefinedになり、useDraggable自体がイベント登録を行わない)。
+  disabled?: boolean;
 }
 
 export const DraggableMana: React.FC<DraggableManaProps> = ({
@@ -16,6 +20,7 @@ export const DraggableMana: React.FC<DraggableManaProps> = ({
   side,
   sourceZone,
   children,
+  disabled = false,
 }) => {
   const draggableId = `${sourceZone}_${side}_${mana.id}`;
 
@@ -27,12 +32,13 @@ export const DraggableMana: React.FC<DraggableManaProps> = ({
       sourceZone,
       mana,
     },
+    disabled,
   });
 
   const style: React.CSSProperties = {
     // 自身は移動せず、元の位置にプレースホルダーとして薄く残す
     opacity: isDragging ? 0.3 : 1,
-    cursor: isDragging ? 'grabbing' : 'grab',
+    cursor: disabled ? 'default' : isDragging ? 'grabbing' : 'grab',
     touchAction: 'none', // モバイルブラウザ等でのスクロール競合防止
   };
 

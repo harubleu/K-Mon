@@ -198,6 +198,41 @@ const evaluateTurnStartCardWinConditions = (
   return null;
 };
 
+// 【今回追加・泊】disable_opponent_monster_effectsのカウント消費処理。
+// 原文「次のあいてのターンを1と数えて、3回あいてのターンがくるまで」＋FAQ「3回めの
+// 相手ターンが終わった直後(自ターンが始まる前)に裏向きに戻る」に基づき、
+// 「泊の所有者から見た相手」= 今まさに終わるturnPlayerのターンが終了するたびに、
+// turnPlayerの相手(=nextTurnPlayer、泊の所有側)が持つ泊のカウントを1減らす。
+// 0になった時点で裏向きに戻す(disabledOpponentTurnsRemainingをundefinedへ、isFlipped:true)。
+// 泊を複数所持していても、それぞれ独立してカウントする(全て同時に3スタートのため
+// 通常は同時に切れるが、念のため個別管理する)。
+const consumeDisableOpponentEffectsCounters = (
+  playerState: PlayerState,
+): PlayerState => {
+  let changed = false;
+  const updatedMonsters = playerState.monsters.map((monster) => {
+    if (
+      monster.isFlipped ||
+      monster.disabledOpponentTurnsRemaining === undefined
+    ) {
+      return monster;
+    }
+    const remaining = monster.disabledOpponentTurnsRemaining - 1;
+    changed = true;
+    if (remaining <= 0) {
+      // 3回目の相手ターンが終わった直後(自ターンが始まる前)に裏向きに戻る
+      return {
+        ...monster,
+        isFlipped: true,
+        disabledOpponentTurnsRemaining: undefined,
+      };
+    }
+    return { ...monster, disabledOpponentTurnsRemaining: remaining };
+  });
+  if (!changed) return playerState;
+  return { ...playerState, monsters: updatedMonsters };
+};
+
 // 【追加・激】own_turn_end_predict_win。ドロー系Action(AUTO_DRAW/DRAW_REPLACE_FROM_GRAVEYARD)
 // の直後に呼ばれる。drawerSide(実際に引いた側)の相手が、表向きの激で予想を宣言していれば
 // 漢字を照合する。的中・不的中を問わず、判定後は必ず予想をクリアする(「次にひく」一回限りの
@@ -209,8 +244,14 @@ const applyPredictedDrawCheck = (
 ): GameState => {
   const watcherSide = getOpponentSide(drawerSide);
   const watcherState = state[watcherSide];
+  // 【今回追加・isRemovedFromGame横断フィルタ】予想宣言(SET_PREDICTED_DRAW_KANJI)後、
+  // ドローが発生するまでの間に相手の認・獄で取り除かれるエッジケースに備え、
+  // isRemovedFromGameのモンスターは判定対象から除外する。
   const monsterIndex = watcherState.monsters.findIndex(
-    (m) => !m.isFlipped && m.predictedDrawKanji !== undefined,
+    (m) =>
+      !m.isFlipped &&
+      !m.isRemovedFromGame &&
+      m.predictedDrawKanji !== undefined,
   );
   if (monsterIndex === -1) return state;
 
@@ -406,10 +447,19 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const nextTurnCount =
         turnPlayer === 'opponent' ? turnCount + 1 : turnCount;
 
+      // 【今回追加・泊】turnPlayer(今終わったターン)の相手=nextTurnPlayerが持つ泊の
+      // カウントを消費する。「泊の所有者から見た相手のターン」が1つ終わったことになるため。
+      const stateAfterDisableCounter = {
+        ...stateAfterReserve,
+        [nextTurnPlayer]: consumeDisableOpponentEffectsCounters(
+          stateAfterReserve[nextTurnPlayer],
+        ),
+      };
+
       // 【変更・浅/政の勝敗接続】従来は政のみログ出力に留めていたが、evaluateTurnStartCardWinConditions
       // (浅・政を統合)へ差し替え、実際にgameStatusを更新するよう格上げした。
       const turnStartWinResult = evaluateTurnStartCardWinConditions(
-        stateAfterReserve,
+        stateAfterDisableCounter,
         nextTurnPlayer,
       );
 
@@ -427,7 +477,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       if (turnStartWinResult) {
         return {
-          ...stateAfterReserve,
+          ...stateAfterDisableCounter,
           turnPlayer: nextTurnPlayer,
           turnCount: nextTurnCount,
           currentPhase: 'start',
@@ -437,7 +487,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       }
 
       return {
-        ...stateAfterReserve,
+        ...stateAfterDisableCounter,
         turnPlayer: nextTurnPlayer,
         turnCount: nextTurnCount,
         // 【追加】ターン交代後は必ずstartフェーズへ。own_turn_startパイプラインの判定が
@@ -514,12 +564,16 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const card = player.cemetery.find((c) => c.id === cardId);
       if (!card) return state;
 
+      // 【今回追加】「1枚ドロー確認」モーダルのキャンセル時に、本来の送り元(墓地)へ
+      // 正しく戻せるよう、カード実体にタグを付与する(6章の既知の課題を修正)。
+      const taggedCard: ManaCard = { ...card, pendingDrawSource: 'graveyard' };
+
       const nextState = {
         ...state,
         [side]: {
           ...player,
           cemetery: player.cemetery.filter((c) => c.id !== cardId),
-          pendingDrawCards: [...player.pendingDrawCards, card],
+          pendingDrawCards: [...player.pendingDrawCards, taggedCard],
         },
       };
 
@@ -747,13 +801,28 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     case 'FLIP_MONSTER': {
       const { side, monsterIndex } = action.payload;
       const player = state[side];
+      const targetMonster = player.monsters[monsterIndex];
+      if (!targetMonster) return state;
+
+      const nextIsFlipped = !targetMonster.isFlipped;
+
+      // 【今回追加・泊】表向きになった瞬間(nextIsFlipped===false)、このモンスターが
+      // disable_opponent_monster_effectsを持っていれば、無効化カウントを3にセットする。
+      // 裏向きに戻された場合(手動操作含む)はカウントをクリアする。
+      const hasDisablePassive = getPassiveList(targetMonster).some(
+        (p) => p.trigger === 'disable_opponent_monster_effects',
+      );
+      const disabledOpponentTurnsRemaining = nextIsFlipped
+        ? undefined
+        : hasDisablePassive
+          ? 3
+          : targetMonster.disabledOpponentTurnsRemaining;
 
       const updatedMonsters = [...player.monsters];
-      const nextIsFlipped = !updatedMonsters[monsterIndex].isFlipped;
-
       updatedMonsters[monsterIndex] = {
-        ...updatedMonsters[monsterIndex],
+        ...targetMonster,
         isFlipped: nextIsFlipped,
+        disabledOpponentTurnsRemaining,
       };
 
       const logMsg = `${getSideLabel(side)}の「${updatedMonsters[monsterIndex].name || `モンスター${monsterIndex + 1}`}」を${nextIsFlipped ? '裏面(スロット面)' : '表面(イラスト面)'}に表示切替しました。`;
@@ -789,9 +858,19 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const sourceKey =
         sourceZone === 'pending' ? 'pendingDrawCards' : sourceZone;
       const sourceArray = player[sourceKey] || [];
-      const cardToEquip = sourceArray.find((c) => c.id === manaCardId);
+      const rawCardToEquip = sourceArray.find((c) => c.id === manaCardId);
 
-      if (!cardToEquip) return state;
+      if (!rawCardToEquip) return state;
+
+      // 【今回追加】pending領域からの装備確定時もpendingDrawSourceタグを剥がす
+      // (MOVE_CARD_BETWEEN_ZONESと同じ理由)。
+      const cardToEquip: ManaCard =
+        sourceZone === 'pending' && rawCardToEquip.pendingDrawSource
+          ? (() => {
+              const { pendingDrawSource, ...rest } = rawCardToEquip;
+              return rest;
+            })()
+          : rawCardToEquip;
 
       const updatedSourceArray = sourceArray.filter((c) => c.id !== manaCardId);
 
@@ -871,6 +950,15 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const targetKey =
         targetZone === 'pending' ? 'pendingDrawCards' : targetZone;
+      // 【今回追加】pending領域から確定先(装備/墓地/除外/山札)へ移動する際、
+      // pendingDrawSourceタグ(仁・花のdraw_replace由来マーク)を剥がす。
+      // このタグは「1枚ドロー確認」モーダルのキャンセル時の戻し先判定にのみ使うため、
+      // pendingを離れた時点で役目を終える。他の効果判定は一切参照しないため、
+      // 残存しても実害はないが、データの整合性のため確定時にクリアする。
+      const cardsToPlace: ManaCard[] =
+        sourceZone === 'pending' && targetZone !== 'pending'
+          ? movingCards.map(({ pendingDrawSource, ...rest }) => rest)
+          : movingCards;
 
       let nextState: GameState;
 
@@ -878,8 +966,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         const targetList = sourcePlayer[targetKey] || [];
         const newTargetList =
           targetZone === 'deck'
-            ? [...movingCards, ...targetList]
-            : [...targetList, ...movingCards];
+            ? [...cardsToPlace, ...targetList]
+            : [...targetList, ...cardsToPlace];
 
         nextState = {
           ...state,
@@ -894,8 +982,8 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         const targetList = targetPlayer[targetKey] || [];
         const newTargetList =
           targetZone === 'deck'
-            ? [...movingCards, ...targetList]
-            : [...targetList, ...movingCards];
+            ? [...cardsToPlace, ...targetList]
+            : [...targetList, ...cardsToPlace];
 
         nextState = {
           ...state,
@@ -920,12 +1008,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     }
 
     case 'REORDER_DECK': {
-      const { side, orderedCardIds } = action.payload;
+      const { side, orderedCardIds, faceUp } = action.payload;
       const player = state[side];
 
       const orderedCards = orderedCardIds
         .map((id) => player.deck.find((c) => c.id === id))
-        .filter((c): c is ManaCard => c !== undefined);
+        .filter((c): c is ManaCard => c !== undefined)
+        // 【今回追加・詳】faceUp:trueの場合、並び替え対象カードにfaceUpMarkerを立てる
+        .map((c) => (faceUp ? { ...c, faceUpMarker: true } : c));
       const remainingCards = player.deck.filter(
         (c) => !orderedCardIds.includes(c.id),
       );
@@ -940,6 +1030,32 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           createLog(
             'system',
             `${getSideLabel(side)}の山札の並び順を変更しました。`,
+          ),
+          ...state.logs,
+        ],
+      };
+    }
+
+    // 【今回追加・逆】山札と墓地を丸ごと入れ替える。原文「今の順番のまま入れ替える
+    // (墓地の一番下のマナが山札の一番上に、山札の一番上のマナが墓地の一番下にくる)」を
+    // 実現するため、それぞれの配列を反転させてから入れ替える。
+    // 例: 墓地[墓1(上=最新),墓2,墓3(下=最古)] → 新山札[墓3,墓2,墓1](墓3が新山札の先頭=一番上)
+    case 'SWAP_ZONES': {
+      const { side } = action.payload;
+      const player = state[side];
+      const newDeck = [...player.cemetery].reverse();
+      const newCemetery = [...player.deck].reverse();
+      return {
+        ...state,
+        [side]: {
+          ...player,
+          deck: newDeck,
+          cemetery: newCemetery,
+        },
+        logs: [
+          createLog(
+            'system',
+            `${getSideLabel(side)}の山札と墓地を入れ替えました。`,
           ),
           ...state.logs,
         ],
@@ -1058,7 +1174,12 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         ...state,
         [side]: {
           ...player,
-          deck: shuffleArray(player.deck),
+          // 【今回追加・詳】シャッフルした側の山札のfaceUpMarkerを一括解除してからシャッフル
+          deck: shuffleArray(
+            player.deck.map((c) =>
+              c.faceUpMarker ? { ...c, faceUpMarker: false } : c,
+            ),
+          ),
           // 【追加・明】シャッフルした側の山札トップ公開フラグを解除する
           deckTopRevealed: false,
         },

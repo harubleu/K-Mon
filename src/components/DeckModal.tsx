@@ -285,6 +285,10 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                 effectSelection.kanjiFilter.includes(card.kanji);
               // 【追加・忍】deck_mark_delayed_reduceで仕込まれたトラップの可視化
               const isTrapped = !!card.trapEffect;
+              // 【今回追加・詳】deck_partial_reorder(faceUp:true)で表向きのまま
+              // 山札に戻されたカードの可視化。山札は通常非公開だが、このカードのみ
+              // 「表向き」という特別な状態を持つことをバッジで示す。
+              const isFaceUp = !!card.faceUpMarker;
               return (
                 <div
                   key={card.id}
@@ -301,15 +305,42 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                     }
                   }}
                   style={{
+                    position: 'relative',
                     cursor: isSelectable ? 'pointer' : 'not-allowed',
                     opacity: isSelectable ? 1 : 0.35,
-                    border: isSelected ? '3px solid #007bff' : '1px solid #ccc',
+                    border: isFaceUp
+                      ? '2px solid #f59e0b'
+                      : isSelected
+                        ? '3px solid #007bff'
+                        : '1px solid #ccc',
                     borderRadius: '6px',
                     padding: '4px',
                     backgroundColor: isSelected ? '#e6f0ff' : '#fff',
                     boxSizing: 'border-box',
                   }}
                 >
+                  {isFaceUp && (
+                    <span
+                      title='詳の効果で表向きのまま山札に戻されています(シャッフルまで継続)'
+                      style={{
+                        position: 'absolute',
+                        top: '-8px',
+                        left: '-8px',
+                        backgroundColor: '#f59e0b',
+                        color: '#fff',
+                        borderRadius: '50%',
+                        width: '20px',
+                        height: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.7rem',
+                        zIndex: 1,
+                      }}
+                    >
+                      表
+                    </span>
+                  )}
                   {isTrapped && (
                     <span
                       title={`ドロー時に山札を${card.trapEffect?.reduceCount}枚失うトラップが仕込まれています`}
@@ -332,7 +363,12 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                       !
                     </span>
                   )}
-                  <DraggableMana mana={card} side={side} sourceZone='deck'>
+                  <DraggableMana
+                    mana={card}
+                    side={side}
+                    sourceZone='deck'
+                    disabled={!!effectSelection || !!effectKanjiSelect}
+                  >
                     <Card card={card} />
                   </DraggableMana>
                 </div>

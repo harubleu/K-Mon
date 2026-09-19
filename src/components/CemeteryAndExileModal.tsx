@@ -210,7 +210,12 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
                     backgroundColor: isSelected ? '#e6f0ff' : '#fff',
                   }}
                 >
-                  <DraggableMana mana={card} side={side} sourceZone={activeTab}>
+                  <DraggableMana
+                    mana={card}
+                    side={side}
+                    sourceZone={activeTab}
+                    disabled={!!effectSelection}
+                  >
                     <Card card={card} />
                   </DraggableMana>
                 </div>

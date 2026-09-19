@@ -66,6 +66,29 @@ export const SortableDeckCard: React.FC<SortableDeckCardProps> = ({
           !
         </span>
       )}
+      {/* 【今回追加・詳】deck_partial_reorder(faceUp:true)で表向きのまま戻されたカードの
+          可視化。左上(トラップ)・右上(順序バッジ)と衝突しないよう左下に配置 */}
+      {card.faceUpMarker && (
+        <span
+          title='詳の効果で表向きのまま山札に戻されています(シャッフルまで継続)'
+          style={{
+            position: 'absolute',
+            bottom: '-8px',
+            left: '-8px',
+            backgroundColor: '#3b82f6',
+            color: '#fff',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            fontSize: '0.7rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          表
+        </span>
+      )}
       <span
         style={{
           position: 'absolute',

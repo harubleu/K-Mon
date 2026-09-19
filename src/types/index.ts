@@ -361,6 +361,17 @@ export interface ManaCard {
   // パターン。own_turn_startパイプライン側で「seededByを持つカードが所有側の墓地にあるか」を
   // 判定するために使う(判定側であるside=政の所有者を記録)。
   seededBy?: { side: PlayerSide };
+  // 【今回追加・詳】deck_partial_reorderのfaceUp:trueで山札に戻された際に、表向きのまま
+  // 保持するためのマーク。忍のtrapEffect・政のseededByと同じ「カード実体タグ」パターン。
+  // シャッフルされた側の山札で一括解除される（忍・詳とも位置ベースではなくid参照のため、
+  // シャッフルされても本来は消える理由がないが、詳は原文に明記が無いため他カードの慣例
+  // 〈政と同種のタグは基本シャッフルで解除〉に倣いSHUFFLE_DECK側で解除する）。
+  faceUpMarker?: boolean;
+  // 【今回追加】仁・花のdraw_replace(DRAW_REPLACE_FROM_GRAVEYARD)経由でpendingDrawCardsに
+  // 入ったカードに付与するマーク。忍のtrapEffect・政のseededByと同じ「カード実体タグ」
+  // パターン。「1枚ドロー確認」モーダルのキャンセル時、本来の送り元(墓地)へ正しく
+  // 戻すために使う。通常のAUTO_DRAW由来のカードには付与されない(undefined=山札由来)。
+  pendingDrawSource?: 'graveyard';
 }
 
 // --- モンスターカード ---
@@ -392,6 +403,14 @@ export interface MonsterCard {
   // として予想中の漢字。未確定の間は`undefined`。ドロー発生時に判定され、的中・不的中を
   // 問わず判定後はクリアされる(「次にひく」一回限りの予想のため)。
   predictedDrawKanji?: string;
+  // 【今回追加・泊】このモンスターの所有者が泊を発動中の場合の残りターン数。
+  // FLIP_MONSTERで表向きにした瞬間に3をセットし、相手のターンが終了するたびに1減らす
+  // (原文「次のあいてのターンを1と数えて、3回あいてのターンがくるまで」＋FAQ「3回めの
+  // 相手ターンが終わった直後(自ターンが始まる前)に裏向きに戻る」)。0になった時点で
+  // FLIP_MONSTERを発火して裏向きに戻し、このフィールドはundefinedに戻す。
+  // 泊を持たないモンスターがFLIP_MONSTERされても、このフィールドとは無関係
+  // (disable_opponent_monster_effectsを持つモンスターが表向きになった時のみセットする)。
+  disabledOpponentTurnsRemaining?: number;
 }
 
 export type LogType = 'draw' | 'mana' | 'attack' | 'system' | 'alert';
@@ -513,7 +532,12 @@ export type MoveCardToReserveAction = {
 
 export type ReorderDeckAction = {
   type: 'REORDER_DECK';
-  payload: { side: PlayerSide; orderedCardIds: string[] };
+  payload: {
+    side: PlayerSide;
+    orderedCardIds: string[];
+    // 【今回追加・詳】trueの場合、orderedCardIdsに含まれるカードにfaceUpMarkerを立てる
+    faceUp?: boolean;
+  };
 };
 
 export type ShuffleDeckAction = {
@@ -617,6 +641,17 @@ export type ForceEndOpponentTurnAction = {
   payload: { side: PlayerSide }; // 自分のターンを開始する側
 };
 
+// 【今回追加・逆】山札全体と墓地全体を「今の順番のまま」丸ごと入れ替えるAction。
+// MOVE_CARD_BETWEEN_ZONESでは表現できない(1枚単位の移動を前提とした型のため)ため新設。
+// FAQにより、この入れ替えによる山札の増減は「効果による墓地送り」として扱わない
+// (敵等のredirect_own_deck_reduce系が誤発動しない)ことが確定しているため、
+// 永続パッシブ割り込みパイプライン(applyDeckReducePassives/applyManaTrashPassives)を
+// 経由しない特別な発行経路(素のdispatch)で扱う。
+export type SwapZonesAction = {
+  type: 'SWAP_ZONES';
+  payload: { side: PlayerSide };
+};
+
 export type GameAction =
   | EquipManaAction
   | TrashManaAction
@@ -641,6 +676,7 @@ export type GameAction =
   | SetPredictedDrawKanjiAction
   | DrawReplaceFromGraveyardAction
   | SetGameStatusAction
+  | SwapZonesAction
   | { type: 'NEXT_PHASE' }
   | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }

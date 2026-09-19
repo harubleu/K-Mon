@@ -22,6 +22,7 @@ import {
   getOpponentSide,
   getPlayerState,
   resolveRevealCheckActions,
+  isMonsterEffectsDisabledByOpponentBan,
 } from './effectExecutor';
 
 // --- DeckModalに「カードを選ばせる」ケース ---
@@ -221,11 +222,50 @@ export function describeSelectionRequirement(
       };
 
     // ============ 今回実装: DeckModalでの並び替え ============
+    // 【今回改訂】'both'（並・詳）を新規対応。1巡目はctx.ownerSide、2巡目は相手側の順で
+    // 逐次実行する(出のforcedSideと同型の「PendingSelectionに次巡の対象を持たせる」方式)。
+    // 1巡目かどうかはctx.forcedSide未指定で判定する。
     case 'deck_full_reorder': {
-      // 'both'（両者の山札を並び替える）は2モーダルの逐次制御が必要なため今回は見送り
-      if (effect.targetSide === 'both') return null;
+      if (effect.targetSide === 'both') {
+        const side = ctx.forcedSide ?? ctx.ownerSide;
+        return { kind: 'deck_reorder', side, scope: 'full' };
+      }
       const side = resolveSide(effect.targetSide ?? 'self', ctx.ownerSide);
       return { kind: 'deck_reorder', side, scope: 'full' };
+    }
+
+    // 【今回実装】詳・美。
+    // 詳(targetSide:'both')：並と同じ2巡ロジック。faceUp:trueならscope.faceUpも伝える。
+    // 美(targetSide:'choose')：phase1でzone_target_select(2択)、確定後にctx.reorderTargetSideを
+    // 見てphase2(deck_reorder本体)へ進む、生方のexcludeSelfと同型の多段階選択パターン。
+    case 'deck_partial_reorder': {
+      if (effect.targetSide === 'choose') {
+        if (ctx.reorderTargetSide === undefined) {
+          return {
+            kind: 'zone_target_select',
+            options: ['自分の山札', '相手の山札'],
+          };
+        }
+        return {
+          kind: 'deck_reorder',
+          side: ctx.reorderTargetSide,
+          scope: { partialTopCount: effect.count },
+        };
+      }
+      if (effect.targetSide === 'both') {
+        const side = ctx.forcedSide ?? ctx.ownerSide;
+        return {
+          kind: 'deck_reorder',
+          side,
+          scope: { partialTopCount: effect.count },
+        };
+      }
+      const side = resolveSide(effect.targetSide, ctx.ownerSide);
+      return {
+        kind: 'deck_reorder',
+        side,
+        scope: { partialTopCount: effect.count },
+      };
     }
 
     case 'deck_kanji_purge': {
@@ -375,6 +415,7 @@ export function describeSelectionRequirement(
     // 【追加】囲: 墓地からマナを2枚選び、reservedCardsへ並べる（保持ゾーンの充填）。
     // graveyard_select_recoverと似た「墓地カードを選ぶ」UIだが行き先がreservedCardsである点が異なる。
     case 'graveyard_partial_to_reserve': {
+      if (ctx.sourceMonsterIndex === undefined) return null;
       const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
       const cappedCount = Math.min(effect.count, cemetery.length);
       if (cappedCount === 0) return null;
@@ -390,6 +431,7 @@ export function describeSelectionRequirement(
     // 存在しない漢字種類のマナを1~maxCount枚選ぶ。候補漢字が0種類(相手が全種類を保有)の場合は
     // 不発(null)。選べる枚数は「候補漢字に一致する自分の墓地の実枚数」でも頭打ちにする。
     case 'deck_seed_mana_win_condition': {
+      if (ctx.sourceMonsterIndex === undefined) return null;
       const opponentSide = getOpponentSide(ctx.ownerSide);
       const opp = getPlayerState(ctx.gameState, opponentSide);
       const opponentKanjiSet = new Set<string>();
@@ -622,11 +664,7 @@ export function describeSelectionRequirement(
     case 'deck_predict_full_composition_win':
       return { kind: 'deck_composition_predict' };
 
-    // ============ 見送り: 現状該当カードが'both'/'choose'のみのため（3章参照） ============
-    // 型としてはDeckReorderRequirement.scope: {partialTopCount}を既に用意してあるため、
-    // self/opponent固定のカードが増えた際はdeck_full_reorderと同様の実装で対応可能
-    case 'deck_partial_reorder':
-      return null;
+    // ============ 見送り: 該当カードなし（旧・詳/美のみで、今回対応済み） ============
 
     // ============ そもそも選択不要(resolveMonsterEffectで自動解決されるはずの効果) ============
     // ここに来ることは基本ないが、呼び出し順序の誤り等で来た場合に備えnullを返す
@@ -726,6 +764,14 @@ export function buildActionsFromSelection(
   ctx: ExecutorContext,
   answer: EffectSelectionAnswer,
 ): GameAction[] | null {
+  // 【今回追加・泊】resolveMonsterEffectと同じガード。選択UI自体は通常通り出すが
+  // (describeSelectionRequirementは変更しない)、確定時のActionは空にする
+  // (「発動はするが効果は無効」)。nullではなく空配列[]を返す(nullはanswer.kind
+  // 不一致等の別の意味を持つ既存の意味論のため、混同を避ける)。
+  if (isMonsterEffectsDisabledByOpponentBan(ctx.gameState, ctx.ownerSide)) {
+    return [];
+  }
+
   switch (effect.effectId) {
     case 'deck_select_trash': {
       if (answer.kind !== 'deck_select') return null;
@@ -764,14 +810,42 @@ export function buildActionsFromSelection(
       }));
     }
 
+    // 【今回改訂】並(deck_full_reorder)のboth対応。forcedSideが来ていればそちらを優先、
+    // 無ければ従来通りresolveSideで解決する(self/opponent固定カード向けの後方互換)。
     case 'deck_full_reorder': {
       if (answer.kind !== 'deck_reorder') return null;
-      if (effect.targetSide === 'both') return null;
-      const side = resolveSide(effect.targetSide ?? 'self', ctx.ownerSide);
+      const side =
+        effect.targetSide === 'both'
+          ? (ctx.forcedSide ?? ctx.ownerSide)
+          : resolveSide(effect.targetSide ?? 'self', ctx.ownerSide);
       return [
         {
           type: 'REORDER_DECK',
           payload: { side, orderedCardIds: answer.orderedCardIds },
+        },
+      ];
+    }
+
+    // 【今回実装】詳・美。
+    case 'deck_partial_reorder': {
+      if (answer.kind !== 'deck_reorder') return null;
+      let side: PlayerSide;
+      if (effect.targetSide === 'choose') {
+        if (ctx.reorderTargetSide === undefined) return null;
+        side = ctx.reorderTargetSide;
+      } else if (effect.targetSide === 'both') {
+        side = ctx.forcedSide ?? ctx.ownerSide;
+      } else {
+        side = resolveSide(effect.targetSide, ctx.ownerSide);
+      }
+      return [
+        {
+          type: 'REORDER_DECK',
+          payload: {
+            side,
+            orderedCardIds: answer.orderedCardIds,
+            faceUp: effect.faceUp,
+          },
         },
       ];
     }
@@ -1133,6 +1207,11 @@ export function buildActionsFromSelection(
     // 【追加】保: 選ばれた数値=「下から残す枚数」。残り(=山札の上から詰めた分)をreservedCardsへ。
     // 山札配列のindex 0が「山札の一番上」という既存規約(takeTopDeckIds等)に基づき、
     // 「下から残す」= 配列の末尾からkeepCount枚を山札に残し、残り(先頭側)を保持ゾーンへ送る。
+    // 【今回・表面固定発動ガード検討時の差し戻し】保はFLIP_MONSTERを伴わせない。
+    // 山札0枚時の自動返却処理(useGameState.tsのreturnReservedCardsIfDeckEmpty)が
+    // 「!m.isFlipped(表向き)」を対象探索の条件にしており、発動時に裏向き化すると
+    // 自動返却が機能しなくなる致命的な矛盾が生じるため、保は従来通り「発動後も
+    // 表向きのまま」の挙動を維持する(囲・政のみ1回限りでFLIP_MONSTERを伴わせる)。
     case 'deck_partial_to_reserve': {
       if (answer.kind !== 'number_select') return null;
       if (ctx.sourceMonsterIndex === undefined) return null;
@@ -1194,6 +1273,8 @@ export function buildActionsFromSelection(
     }
 
     // 【追加】囲: 選択された墓地カードをreservedCardsへ送る(墓地起点)。
+    // 【今回追加】表面固定永続効果の発動ガード対応: 前準備発動は1回限とし、
+    // 発動と同時にFLIP_MONSTER(裏向き化)を伴わせる(ユーザー確認済み)。
     case 'graveyard_partial_to_reserve': {
       if (answer.kind !== 'graveyard_select') return null;
       if (ctx.sourceMonsterIndex === undefined) return null;
@@ -1207,6 +1288,13 @@ export function buildActionsFromSelection(
             sourceZone: 'cemetery',
           },
         },
+        {
+          type: 'FLIP_MONSTER',
+          payload: {
+            side: ctx.ownerSide,
+            monsterIndex: ctx.sourceMonsterIndex,
+          },
+        },
       ];
     }
 
@@ -1214,12 +1302,25 @@ export function buildActionsFromSelection(
     // 移動した各カードにseededByタグ(markedBySide=自分)を付ける。
     // own_turn_startパイプライン(seeded_mana_return_win_condition)がこのタグを見て
     // 「相手の墓地にあるか」を毎自ターン開始時に判定する。
+    // 【今回追加】表面固定永続効果の発動ガード対応: 前準備発動は1回限とし、
+    // 発動と同時にFLIP_MONSTER(裏向き化)を伴わせる(ユーザー確認済み)。
     case 'deck_seed_mana_win_condition': {
       if (answer.kind !== 'graveyard_select') return null;
+      if (ctx.sourceMonsterIndex === undefined) return null;
       const ownerSide = ctx.ownerSide;
       const opponentSide = getOpponentSide(ownerSide);
       const cardIds = answer.selectedCardIds;
-      if (cardIds.length === 0) return [];
+      if (cardIds.length === 0) {
+        return [
+          {
+            type: 'FLIP_MONSTER',
+            payload: {
+              side: ownerSide,
+              monsterIndex: ctx.sourceMonsterIndex,
+            },
+          },
+        ];
+      }
       return [
         {
           type: 'MOVE_CARD_BETWEEN_ZONES',
@@ -1235,6 +1336,13 @@ export function buildActionsFromSelection(
         {
           type: 'SET_MANA_SEEDED_MARKER',
           payload: { side: opponentSide, cardIds, markedBySide: ownerSide },
+        },
+        {
+          type: 'FLIP_MONSTER',
+          payload: {
+            side: ownerSide,
+            monsterIndex: ctx.sourceMonsterIndex,
+          },
         },
       ];
     }
