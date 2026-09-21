@@ -3,6 +3,7 @@
 import React from 'react';
 import type { MonsterCard, PlayerSide } from '../types';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
+import { getEffectiveKanji, getDisplayColor } from '../utils/manaKanji';
 
 interface MonsterWithManaProps {
   monster: MonsterCard;
@@ -131,7 +132,7 @@ export const MonsterWithMana: React.FC<MonsterWithManaProps> = ({
                       style={{
                         width: '100%',
                         height: '100%',
-                        backgroundColor: mana.hexColor,
+                        backgroundColor: getDisplayColor(mana),
                         borderRadius: '6px',
                         display: 'flex',
                         alignItems: 'center',
@@ -146,7 +147,7 @@ export const MonsterWithMana: React.FC<MonsterWithManaProps> = ({
                           textShadow: '1px 1px 2px #000',
                         }}
                       >
-                        {mana.kanji}
+                        {getEffectiveKanji(mana)}
                       </span>
                     </div>
                   </div>

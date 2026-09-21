@@ -3,6 +3,8 @@
 import React, { useState } from 'react';
 import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
+import { getEffectiveKanji, matchesKanjiFilter } from '../utils/manaKanji';
+import { MANA_MASTER_LIST } from '../data/masterData';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
 import { SortableDeckCard } from './GameBoard/SortableDeckCard';
@@ -58,6 +60,8 @@ export interface DeckModalProps {
   effectKanjiSelect?: {
     revealScope: 'full' | number;
     kanjiCount: number;
+    // 【今回追加】trueなら、公開した山札に無い漢字も指定できる(検)
+    allowAnyKanji?: boolean;
     onConfirm: (selectedKanji: string[]) => void;
     onCancel: () => void;
   } | null;
@@ -243,6 +247,44 @@ export const DeckModal: React.FC<DeckModalProps> = ({
           </div>
         )}
 
+        {/* 【今回追加・検】山札にない色も指定できる。山札に無い漢字を選択肢として並べる */}
+        {effectKanjiSelect?.allowAnyKanji && (
+          <div style={{ margin: '4px 0' }}>
+            <div style={{ fontSize: '0.8rem', color: '#6366f1' }}>
+              山札にない色も指定できます（クリックで選択・解除）
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+              {MANA_MASTER_LIST.filter(
+                (m) => !displayedDeck.some((c) => getEffectiveKanji(c) === m.kanji),
+              ).map((m) => (
+                <span
+                  key={m.kanji}
+                  onClick={() =>
+                    setSelectedKanji((prev) =>
+                      prev.includes(m.kanji)
+                        ? prev.filter((k) => k !== m.kanji)
+                        : [...prev, m.kanji],
+                    )
+                  }
+                  style={{
+                    cursor: 'pointer',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    backgroundColor: m.hexColor,
+                    color: '#fff',
+                    textShadow: '1px 1px 2px #000',
+                    border: selectedKanji.includes(m.kanji)
+                      ? '3px solid #007bff'
+                      : '1px solid #ccc',
+                  }}
+                >
+                  {m.kanji}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 山札カード一覧 */}
         <div
           style={{
@@ -277,12 +319,12 @@ export const DeckModal: React.FC<DeckModalProps> = ({
             // 通常モードの描画。effectKanjiSelect時は漢字単位でのハイライトに切り替える
             displayedDeck.map((card) => {
               const isSelected = effectKanjiSelect
-                ? selectedKanji.includes(card.kanji)
+                ? selectedKanji.includes(getEffectiveKanji(card))
                 : selectedIds.includes(card.id);
               const isSelectable =
                 effectKanjiSelect ||
                 !effectSelection?.kanjiFilter ||
-                effectSelection.kanjiFilter.includes(card.kanji);
+                matchesKanjiFilter(card, effectSelection.kanjiFilter);
               // 【追加・忍】deck_mark_delayed_reduceで仕込まれたトラップの可視化
               const isTrapped = !!card.trapEffect;
               // 【今回追加・詳】deck_partial_reorder(faceUp:true)で表向きのまま
@@ -296,9 +338,9 @@ export const DeckModal: React.FC<DeckModalProps> = ({
                     if (!isSelectable) return;
                     if (effectKanjiSelect) {
                       setSelectedKanji((prev) =>
-                        prev.includes(card.kanji)
-                          ? prev.filter((k) => k !== card.kanji)
-                          : [...prev, card.kanji],
+                        prev.includes(getEffectiveKanji(card))
+                          ? prev.filter((k) => k !== getEffectiveKanji(card))
+                          : [...prev, getEffectiveKanji(card)],
                       );
                     } else {
                       handleToggleCard(card.id);

@@ -10,6 +10,10 @@ import { Card } from '../Card';
 interface KanjiTypePickerModalProps {
   isOpen: boolean;
   kanjiCount: number;
+  // 【今回追加】予想系(激・流)で流用する際に、文言を差し替えられるようにする(任意)。
+  // 未指定時は従来の械・泣向けの文言のまま(既存の呼び出し元は無変更)。
+  title?: string;
+  confirmLabel?: string;
   onConfirm: (selectedKanji: string[]) => void;
   onCancel: () => void;
 }
@@ -17,6 +21,8 @@ interface KanjiTypePickerModalProps {
 export const KanjiTypePickerModal: React.FC<KanjiTypePickerModalProps> = ({
   isOpen,
   kanjiCount,
+  title,
+  confirmLabel = '選択した種類を墓地へ送る',
   onConfirm,
   onCancel,
 }) => {
@@ -68,8 +74,8 @@ export const KanjiTypePickerModal: React.FC<KanjiTypePickerModalProps> = ({
         }}
       >
         <h3 style={{ margin: 0 }}>
-          漢字の種類を{kanjiCount}つ選択してください（現在: {selected.length}/
-          {kanjiCount}）
+          {title ?? `漢字の種類を${kanjiCount}つ選択してください`}（現在:{' '}
+          {selected.length}/{kanjiCount}）
         </h3>
 
         <div
@@ -127,7 +133,7 @@ export const KanjiTypePickerModal: React.FC<KanjiTypePickerModalProps> = ({
               fontWeight: 'bold',
             }}
           >
-            選択した種類を墓地へ送る
+            {confirmLabel}
           </button>
           <button
             onClick={handleCancel}

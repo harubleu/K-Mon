@@ -36,7 +36,12 @@ export type MonsterEffect =
       monsterTargetMode?: 'exclude_self' | 'include_self';
       sourceRestriction?: 'just_trashed_by_this_effect';
     }
-  | { effectId: 'deck_select_equip'; count: number }
+  | {
+      effectId: 'deck_select_equip';
+      count: number;
+      // 【今回追加】graveyard_select_equipと同じ意味(令: 装備先を選べる・自分自身も可)。
+      monsterTargetMode?: 'exclude_self' | 'include_self';
+    }
   | {
       effectId: 'graveyard_select_recover';
       count: number | 'all';
@@ -152,7 +157,9 @@ export type MonsterEffect =
       effectId: 'deck_kanji_search_equip';
       targetKanji: string;
       maxCount: number;
-      excludeSelf: boolean;
+      // 【今回変更】excludeSelf(boolean)からgraveyard_select_equip/deck_select_equipと同じ
+      // monsterTargetModeへ統合(草は'exclude_self': 装備先を選べるが発動元自身は除外)。
+      monsterTargetMode?: 'exclude_self' | 'include_self';
     }
   | {
       effectId: 'deck_normalize_to_count';
@@ -319,6 +326,10 @@ export type PassiveEffect =
       trigger: 'redirect_own_deck_reduce';
       scope: { minCount?: number; maxCount?: number; fixedCount?: number };
       consumeAfterUse: boolean;
+      // 【今回追加】trueなら「じぶんのカードの効果で」自分の山札が減るときのみ発動する(扱)。
+      // 未指定(false)は、相手のカードの効果で自分の山札が減るときにも発動する(敵・返・圧。
+      // 公式QA: 泣の例で、相手の泣に対して敵が発動する)。
+      ownEffectOnly?: boolean;
     }
   | { trigger: 'mitigate_deck_reduce_effect'; amount: number }
   // 【追加】拾で確認：own_kanji_to_graveyard_reaction（養）とは別物。
@@ -372,6 +383,12 @@ export interface ManaCard {
   // パターン。「1枚ドロー確認」モーダルのキャンセル時、本来の送り元(墓地)へ正しく
   // 戻すために使う。通常のAUTO_DRAW由来のカードには付与されない(undefined=山札由来)。
   pendingDrawSource?: 'graveyard';
+  // 【今回追加・花】屮(mana_kanji_wildcardの対象)が、花が表向きの間だけ持てる色の指定。
+  // 指定した漢字のマナとして扱う。undefined=指定なし(素のkanji)。装備時はつけたスロットの
+  // 漢字に自動で指定され、墓地・山札等の屮は手動で指定する(いつでも・指定し直し可能)。
+  // 花が裏向きになる(または取り除かれる)と、他の色の代わりについていた屮は墓地へ行き、
+  // 残る指定もクリアされる。
+  designatedKanji?: string;
 }
 
 // --- モンスターカード ---
@@ -411,6 +428,14 @@ export interface MonsterCard {
   // 泊を持たないモンスターがFLIP_MONSTERされても、このフィールドとは無関係
   // (disable_opponent_monster_effectsを持つモンスターが表向きになった時のみセットする)。
   disabledOpponentTurnsRemaining?: number;
+  // 【今回追加・囲/政】前準備発動(MonsterEffect)を1回限りにするための「発動済み」マーク。
+  // 従来(7.39章)は発動時にFLIP_MONSTERで裏向き化して1回限りを表現していたが、
+  // 「このカードはおもてむきのままにする」という原文と矛盾し、政の勝利条件監視
+  // (!isFlipped)が止まる・囲のバッファ切れ時トグルが逆転する不具合を生んだため、
+  // 表裏(isFlipped)とは独立したこのフラグで管理する方式に改めた。
+  // 裏向きに戻った時点(FLIP_MONSTERでisFlipped:trueになる時)にクリアされ、
+  // 再び表向きにすれば前準備を再度発動できる。保は対象外(従来通り繰り返し発動可)。
+  preparationUsed?: boolean;
 }
 
 export type LogType = 'draw' | 'mana' | 'attack' | 'system' | 'alert';
@@ -424,6 +449,15 @@ export interface ActionLog {
 
 export type GameStatus = 'playing' | 'player_win' | 'opponent_win' | 'draw';
 
+// 【今回追加・命/走】未消化のドロー(残りドロー回数)。命の2枚目・走で山札が足りずに引けなかった
+// 分を、ドローボタンで1枚ずつ引き直せるように保持する。ターン終了(NEXT_PHASE/FORCE_END)で破棄する。
+//   kind:'turn_start' … 命の2枚目。ターン開始のドロー扱い(仁・花の置き換えの対象)
+//   kind:'effect'     … 走の残り。効果によるめくり扱い(仁・花の置き換えの対象外)
+export interface PendingDraws {
+  count: number;
+  kind: 'turn_start' | 'effect';
+}
+
 // --- プレイヤー状態 (State) ---
 export interface PlayerState {
   deck: ManaCard[];
@@ -434,6 +468,8 @@ export interface PlayerState {
   // 【追加・明】山札トップを常時公開する効果用のフラグ。プレイヤーごとに独立し、
   // そのプレイヤー自身がシャッフルした際にのみ解除される。
   deckTopRevealed?: boolean;
+  // 【今回追加・命/走】残りドロー回数。ターン終了で破棄される。
+  remainingDraws?: PendingDraws;
 }
 
 // --- ゲーム全体状態 (Root State)（ターン管理を追加） ---
@@ -447,6 +483,10 @@ export interface GameState {
   gameStatus: GameStatus;
   // 【追加・電】もう一度自分のターンを付与する効果用のフラグ。NEXT_PHASEで消費される。
   pendingExtraTurn?: boolean;
+  // 【今回追加・命/仁/花】現在のターンで、ターン開始のドローを既に行ったか。currentPhaseが
+  // 実際には'start'から進まないため、「ターンのはじめのドロー」を判定するために新設した。
+  // NEXT_PHASE(電の追加ターン含む)・FORCE_END_OPPONENT_TURN・SET_INITIAL_STATEでfalseに戻る。
+  hasDrawnThisTurn?: boolean;
 }
 
 // --- デッキ構築・プリセット用 ---
@@ -582,7 +622,27 @@ export type SetPredictedDrawKanjiAction = {
 // 移動する。AUTO_DRAWと同じ「1枚をpendingへ」という結果になるが、移動元が墓地である点が異なる。
 export type DrawReplaceFromGraveyardAction = {
   type: 'DRAW_REPLACE_FROM_GRAVEYARD';
-  payload: { side: PlayerSide; cardId: string };
+  payload: {
+    side: PlayerSide;
+    cardId: string;
+    // 【今回追加】AutoDrawActionと同じ意味(下記参照)。
+    isTurnStartDraw?: boolean;
+    remainingDrawsAfter?: PendingDraws | null;
+  };
+};
+
+// 【今回改訂】従来はGameActionのunion内にインラインで定義していたAUTO_DRAWを、命・走の
+// 残りドロー回数の管理用フィールド(任意)を追加するため名前付き型へ切り出した。
+//   isTurnStartDraw: trueで、ドローした側がturnPlayerなら hasDrawnThisTurn を立てる
+//   remainingDrawsAfter: 指定時のみ、ドロー後の残りドロー回数を上書きする(nullで解除)。
+//                        ドローが成立しなかった(山札0枚)場合は適用されない
+export type AutoDrawAction = {
+  type: 'AUTO_DRAW';
+  payload: {
+    player: PlayerSide;
+    isTurnStartDraw?: boolean;
+    remainingDrawsAfter?: PendingDraws | null;
+  };
 };
 
 // 【追加・暮/浅/政/激の勝敗接続共通】カード効果由来の勝利条件が成立した際に、gameStatusを
@@ -652,6 +712,20 @@ export type SwapZonesAction = {
   payload: { side: PlayerSide };
 };
 
+// 【今回追加・囲/政】前準備発動済みマーク(MonsterCard.preparationUsed)を立てるAction。
+// FLIP_MONSTER(トグル)の代わりに、表裏を変えずに「1回限り」を表現するために使う。
+export type MarkPreparationUsedAction = {
+  type: 'MARK_PREPARATION_USED';
+  payload: { side: PlayerSide; monsterIndex: number };
+};
+
+// 【今回追加・花】屮の色指定を設定・解除するAction(kanji:nullまたは屮自身の漢字で解除)。
+// 花が表向きで泊に無効化されていない側のみ有効。指定できるのは屮のみ。
+export type SetManaDesignationAction = {
+  type: 'SET_MANA_DESIGNATION';
+  payload: { side: PlayerSide; cardId: string; kanji: string | null };
+};
+
 export type GameAction =
   | EquipManaAction
   | TrashManaAction
@@ -677,7 +751,9 @@ export type GameAction =
   | DrawReplaceFromGraveyardAction
   | SetGameStatusAction
   | SwapZonesAction
+  | MarkPreparationUsedAction
+  | SetManaDesignationAction
   | { type: 'NEXT_PHASE' }
-  | { type: 'AUTO_DRAW'; payload: { player: PlayerSide } }
+  | AutoDrawAction
   | { type: 'SET_TURN_PLAYER'; payload: { turnPlayer: PlayerSide } }
   | { type: 'RESTORE_STATE'; payload: GameState };

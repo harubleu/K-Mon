@@ -31,6 +31,7 @@ import {
   applyDeckReducePassives,
   applyManaTrashPassives,
 } from '../utils/effectExecutor';
+import { applyGraveyardReactions } from '../utils/graveyardReactions';
 import {
   describeSelectionRequirement,
   buildActionsFromSelection,
@@ -176,7 +177,10 @@ export const useEffectExecutor = (
       actingSide,
       gameState,
     );
-    finalActions.forEach((action) => dispatch(action));
+    // 【今回追加・養】墓地へ送られた羊に対する養の反応(相手の山札減少)を追加する
+    // (山札減少・マナ破棄の割り込み処理を通した後のActionが対象)。
+    const reactionActions = applyGraveyardReactions(finalActions, gameState);
+    [...finalActions, ...reactionActions].forEach((action) => dispatch(action));
 
     if (pickupTrigger) {
       setPendingSelection({
@@ -502,12 +506,15 @@ export const useEffectExecutor = (
       return;
     }
 
-    // 【追加】graveyard_select_equip(excludeSelf)のphase1確定時。まだActionを組み立てず、
+    // 【追加】graveyard_select_equip・deck_select_equip(令)・deck_kanji_search_equip(草)の
+    // (monsterTargetMode)phase1確定時。まだActionを組み立てず、
     // 選ばれた装備先モンスターのindexを載せてphase2(墓地カード選択)へ進む。
     // sequenceContextが存在する場合(生・方のように外側sequenceのstep2として発動している場合)は
     // そのまま引き継ぎ、sequence自体はまだ進めない(phase2の確定を待つ)。
     if (
-      pendingSelection.effect.effectId === 'graveyard_select_equip' &&
+      (pendingSelection.effect.effectId === 'graveyard_select_equip' ||
+        pendingSelection.effect.effectId === 'deck_select_equip' ||
+        pendingSelection.effect.effectId === 'deck_kanji_search_equip') &&
       pendingSelection.requirement.kind === 'monster_select' &&
       answer.kind === 'monster_select'
     ) {

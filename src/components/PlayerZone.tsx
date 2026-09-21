@@ -11,6 +11,8 @@ import type { DeckModalProps } from './DeckModal';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
+import { WildcardDesignationModal } from './GameBoard/WildcardDesignationModal';
+import type { WildcardCandidate } from './GameBoard/WildcardDesignationModal';
 
 interface PlayerZoneProps {
   playerState: PlayerState;
@@ -48,6 +50,13 @@ interface PlayerZoneProps {
   effectReorder?: DeckModalProps['effectReorder'];
   effectKanjiSelect?: DeckModalProps['effectKanjiSelect'];
   effectGraveyardSelection?: CemeteryAndExileModalProps['effectSelection'];
+  // 【今回追加・花】表向きで有効な花の万能マナの漢字(屮)。指定があれば「花の色指定」ボタンを出す。
+  wildcardKanji?: string | null;
+  onDesignateMana?: (
+    side: PlayerSide,
+    cardId: string,
+    kanji: string | null,
+  ) => void;
 }
 
 export const PlayerZone: React.FC<PlayerZoneProps> = ({
@@ -68,10 +77,13 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
   effectReorder = null,
   effectKanjiSelect = null,
   effectGraveyardSelection = null,
+  wildcardKanji = null,
+  onDesignateMana,
 }) => {
   // モーダルの開閉状態を保持
   const [isCemeteryModalOpen, setIsCemeteryModalOpen] = useState(false);
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
+  const [isWildcardModalOpen, setIsWildcardModalOpen] = useState(false);
 
   // 【修正】ここに正しく移動。propsのplayerState/side/onTrashManaを参照できる
   const [selectedManaIds, setSelectedManaIds] = useState<string[]>([]);
@@ -99,6 +111,23 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
     });
     setSelectedManaIds([]);
   };
+
+  // 【今回追加・花】色指定の対象になる万能マナ(屮)を、領域ごとに集める
+  const wildcardCandidates: WildcardCandidate[] = wildcardKanji
+    ? [
+        ...playerState.cemetery.map((card) => ({ card, zoneLabel: '墓地' })),
+        ...playerState.pendingDrawCards.map((card) => ({
+          card,
+          zoneLabel: '保留(ドロー)',
+        })),
+        ...playerState.monsters.flatMap((m, i) =>
+          m.equippedMana
+            .filter((c): c is ManaCard => !!c)
+            .map((card) => ({ card, zoneLabel: `モンスター${i + 1}に装備中` })),
+        ),
+        ...playerState.deck.map((card) => ({ card, zoneLabel: '山札' })),
+      ].filter((c) => c.card.kanji === wildcardKanji)
+    : [];
 
   const topCemeteryCard = playerState.cemetery[playerState.cemetery.length - 1];
   const isAnyModalOpen =
@@ -257,6 +286,14 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         >
           墓地・除外確認
         </button>
+        {wildcardKanji && onDesignateMana && (
+          <button
+            onClick={() => setIsWildcardModalOpen(true)}
+            style={{ fontSize: '0.75rem', padding: '4px 8px', cursor: 'pointer' }}
+          >
+            花の色指定
+          </button>
+        )}
         <button
           onClick={() => handleBulkMoveSelectedMana('cemetery')}
           disabled={selectedManaIds.length === 0}
@@ -270,6 +307,17 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
           選択中マナを除外へ ({selectedManaIds.length})
         </button>
       </div>
+
+      {/* 【今回追加・花】屮の色指定モーダル */}
+      {wildcardKanji && onDesignateMana && (
+        <WildcardDesignationModal
+          isOpen={isWildcardModalOpen}
+          wildcardKanji={wildcardKanji}
+          candidates={wildcardCandidates}
+          onDesignate={(cardId, kanji) => onDesignateMana(side, cardId, kanji)}
+          onClose={() => setIsWildcardModalOpen(false)}
+        />
+      )}
 
       {/* 墓地・除外一覧・操作モーダル */}
       <CemeteryAndExileModal

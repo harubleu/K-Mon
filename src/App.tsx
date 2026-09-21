@@ -12,7 +12,13 @@ import { ActionArea } from './components/ActionArea';
 import { DeckBuilder } from './components/DeckBuilder/DeckBuilder';
 import { JankenModal } from './components/GameBoard/JankenModal';
 import { Card } from './components/Card'; // DragOverlay用
-import type { PlayerSide, ZoneType, MonsterCard, ManaCard } from './types'; // 必要な型を追加
+import type {
+  PlayerSide,
+  ZoneType,
+  MonsterCard,
+  ManaCard,
+  PendingDraws,
+} from './types'; // 必要な型を追加
 import { createPortal } from 'react-dom';
 import {
   DndContext,
@@ -24,6 +30,8 @@ import {
   MeasuringStrategy,
   pointerWithin,
 } from '@dnd-kit/core';
+import { planDraw, buildDeckDrawActions } from './utils/drawFlow';
+import { getWildcardKanji } from './utils/effectExecutor';
 import { ActionLogPanel } from './components/ActionLogPanel';
 import { GameStatusAlertModal } from './components/GameStatusAlertModal';
 import { EquipSwapPickerModal } from './components/GameBoard/EquipSwapPickerModal';
@@ -37,7 +45,6 @@ import type { ZoneMoveCandidate } from './components/GameBoard/ZoneMoveSelectMod
 import { DeckCompositionPredictModal } from './components/GameBoard/DeckCompositionPredictModal';
 import {
   getActivatableEffect,
-  findDrawReplacePassive,
   findOwnTurnEndPredictWinMonsterIndex,
   getOpponentSide,
 } from './utils/effectExecutor';
@@ -62,7 +69,16 @@ export const App: React.FC = () => {
   );
   // 【追加・仁】ドローボタン割り込み用。free-choice(仁)の場合のみ選択UIを開く必要があるため
   // 保持する(花はkanji固定のため選択UI自体が不要で、このstateは使わない)。
+  // 【今回改訂】選択候補(つけられるマナに限定済みのカードID)も保持する。
+  // ドロー簿記(ターン開始ドローの済みフラグ・残りドロー回数)も保持し、確定時のdispatchに引き継ぐ。
   const [pendingDrawReplace, setPendingDrawReplace] = useState<{
+    side: PlayerSide;
+    candidateIds: string[];
+    remainingDrawsAfter: PendingDraws | null;
+  } | null>(null);
+  // 【今回追加・流】ドローボタン割り込み用。流の所有者(ドローする側の相手)が予想する漢字を
+  // 選ぶモーダルを開くために、ドローする側とドローの簿記を保持する。
+  const [pendingFlowPrediction, setPendingFlowPrediction] = useState<{
     side: PlayerSide;
   } | null>(null);
   // 【追加・激】「ターンを終了」ボタン割り込み用。予想する漢字を選ぶモーダルを開くために保持する。
@@ -242,6 +258,15 @@ export const App: React.FC = () => {
     });
   };
 
+  // 【今回追加・花】屮の色指定
+  const handleDesignateMana = (
+    side: PlayerSide,
+    cardId: string,
+    kanji: string | null,
+  ) => {
+    dispatch({ type: 'SET_MANA_DESIGNATION', payload: { side, cardId, kanji } });
+  };
+
   const handleRecover = (side: PlayerSide, manaIds: string[]) => {
     dispatch({
       type: 'RECOVER',
@@ -333,34 +358,53 @@ export const App: React.FC = () => {
     // 新規の割り込み判定自体はスキップする(handleNextPhaseと同じ考え方)。ただし、これは
     // 従来からdraw系ボタン自体がpendingSelectionでガードされていなかった挙動を変更しない
     // ための配慮であり、AUTO_DRAWのdispatch自体は従来通り常に行われる。
-    const playerState = gameState[player];
-    const drawReplace = pendingSelection
-      ? null
-      : findDrawReplacePassive(playerState.monsters);
-    if (drawReplace) {
-      if (drawReplace.passive.sourceKanji) {
-        // 花: 漢字固定のため選択UI不要。墓地に該当があれば自動採用、無ければ通常ドローへ。
-        const card = playerState.cemetery.find(
-          (c) => c.kanji === drawReplace.passive.sourceKanji,
-        );
-        if (card) {
-          dispatch({
-            type: 'DRAW_REPLACE_FROM_GRAVEYARD',
-            payload: { side: player, cardId: card.id },
-          });
-          return;
-        }
-      } else if (playerState.cemetery.length > 0) {
-        // 仁: 自由選択。墓地が空でなければ選択UIを開く(空なら通常ドローへフォールバック)。
-        setPendingDrawReplace({ side: player });
-        return;
-      }
+    // 【今回改訂・命/走】ドローの種類と簿記の判定はplanDraw(utils/drawFlow.ts)に切り出した。
+    const plan = planDraw(gameState, player, {
+      suppressReplace: !!pendingSelection,
+    });
+    if (plan.kind === 'graveyard_auto') {
+      // 花: 漢字固定のため選択UI不要。つけられる屮があれば自動採用する。
+      dispatch({
+        type: 'DRAW_REPLACE_FROM_GRAVEYARD',
+        payload: { side: player, cardId: plan.cardId, ...plan.bookkeeping },
+      });
+      return;
+    }
+    if (plan.kind === 'graveyard_choose') {
+      // 仁: つけられるマナの中から1枚を選ばせる。
+      setPendingDrawReplace({
+        side: player,
+        candidateIds: plan.candidateIds,
+        remainingDrawsAfter: plan.remainingDrawsAfter,
+      });
+      return;
     }
 
-    dispatch({
-      type: 'AUTO_DRAW',
-      payload: { player },
-    });
+    // 山札からのドロー。流(表向き)がいる場合は、ドローの前に予想の入力を求める。
+    if (plan.needsPrediction) {
+      setPendingFlowPrediction({ side: player });
+      return;
+    }
+    buildDeckDrawActions(gameState, player, plan).forEach(dispatch);
+  };
+
+  // 【今回追加・流】予想の確定。予想を受けて、ドローと星・流の反応をまとめてdispatchする。
+  const handleConfirmFlowPrediction = (selectedKanji: string[]) => {
+    if (!pendingFlowPrediction || !selectedKanji[0]) return;
+    const side = pendingFlowPrediction.side;
+    setPendingFlowPrediction(null);
+    // 予想モーダルを開いている間に盤面は変わらないため、ここで改めてplanDrawを取り直す
+    const plan = planDraw(gameState, side);
+    if (plan.kind !== 'deck') return;
+    buildDeckDrawActions(gameState, side, plan, selectedKanji[0]).forEach(
+      dispatch,
+    );
+  };
+
+  // 【今回追加・流】予想は必須のため、キャンセルした場合はドローを行わずに閉じる
+  // (仁の選択キャンセルと同じ扱い。押し直せば再度ドローできる)。
+  const handleCancelFlowPrediction = () => {
+    setPendingFlowPrediction(null);
   };
 
   // 【追加・仁】墓地からのドロー代替、選択確定時のハンドラー
@@ -368,20 +412,21 @@ export const App: React.FC = () => {
     if (pendingDrawReplace) {
       dispatch({
         type: 'DRAW_REPLACE_FROM_GRAVEYARD',
-        payload: { side: pendingDrawReplace.side, cardId: selectedCardId },
+        payload: {
+          side: pendingDrawReplace.side,
+          cardId: selectedCardId,
+          isTurnStartDraw: true,
+          remainingDrawsAfter: pendingDrawReplace.remainingDrawsAfter,
+        },
       });
     }
     setPendingDrawReplace(null);
   };
 
-  // 【追加・仁】選択をキャンセルした場合は通常の山札ドローにフォールバックする
+  // 【今回改訂】仁の選択をキャンセルした場合は、ドロー自体を行わない(何も起きずに閉じる)。
+  // 公式QA: 仁は意図的に避けて山札から引くことはできない。従来はキャンセルすると通常の
+  // 山札ドローにフォールバックしており、仁を回避できてしまっていた。
   const handleCancelDrawReplace = () => {
-    if (pendingDrawReplace) {
-      dispatch({
-        type: 'AUTO_DRAW',
-        payload: { player: pendingDrawReplace.side },
-      });
-    }
     setPendingDrawReplace(null);
   };
 
@@ -527,6 +572,7 @@ export const App: React.FC = () => {
     return {
       revealScope: req.revealScope,
       kanjiCount: req.kanjiCount,
+      allowAnyKanji: req.allowAnyKanji,
       onConfirm: (selectedKanji: string[]) =>
         confirmSelection({ kind: 'deck_kanji_reveal_select', selectedKanji }),
       onCancel: cancelSelection,
@@ -923,21 +969,34 @@ export const App: React.FC = () => {
             onCancel={handleCancelTurnEndPrediction}
           />
 
+          {/* 【今回追加・流】ドローボタン割り込み由来の予想宣言モーダル。KanjiTypePickerModalを流用
+              (激・械泣用とは別state系統)。予想するのは流の所有者だが、ドローする側は相手。 */}
+          <KanjiTypePickerModal
+            isOpen={!!pendingFlowPrediction}
+            kanjiCount={1}
+            title='相手が次に引くマナの種類を予想してください（流）'
+            confirmLabel='この種類で予想する'
+            onConfirm={handleConfirmFlowPrediction}
+            onCancel={handleCancelFlowPrediction}
+          />
+
           {/* 【追加・仁】ドローボタン割り込み由来の、墓地からドローするマナの選択モーダル。
               PickupSelectModal(拾用)をtitle/description/confirmLabelで文言を差し替えて流用する。 */}
           <PickupSelectModal
             isOpen={!!pendingDrawReplace}
             candidates={
               pendingDrawReplace
-                ? gameState[pendingDrawReplace.side].cemetery.map((c) => ({
-                    id: c.id,
-                    kanji: c.kanji,
-                    reading: c.reading,
-                  }))
+                ? gameState[pendingDrawReplace.side].cemetery
+                    .filter((c) => pendingDrawReplace.candidateIds.includes(c.id))
+                    .map((c) => ({
+                      id: c.id,
+                      kanji: c.kanji,
+                      reading: c.reading,
+                    }))
                 : []
             }
             title='仁の発動：ドローするマナを選択'
-            description='山札の代わりに、墓地から好きなマナを1枚選んでドローします。'
+            description='山札の代わりに、墓地からモンスターにつけられるマナを1枚選んでドローします（キャンセルするとドローしません）。'
             confirmLabel='このマナをドローする'
             onConfirm={handleConfirmDrawReplace}
             onCancel={handleCancelDrawReplace}
@@ -1017,6 +1076,8 @@ export const App: React.FC = () => {
             }
             onActivateEffect={handleActivateEffect}
             canActivateEffect={canActivateEffect}
+            wildcardKanji={getWildcardKanji(gameState, 'opponent')}
+            onDesignateMana={handleDesignateMana}
           />
 
           {/* [中段] アクション・情報表示エリア */}
@@ -1032,6 +1093,9 @@ export const App: React.FC = () => {
               turnCount={gameState.turnCount}
               onSwitchTurn={handleNextPhase}
               onDraw={handleAutoDraw}
+              remainingDraws={
+                gameState[gameState.turnPlayer].remainingDraws?.count
+              }
               onJanken={handleBattleJanken}
               onDeckMill={handleDeckMill}
             />
@@ -1065,6 +1129,8 @@ export const App: React.FC = () => {
             }
             onActivateEffect={handleActivateEffect}
             canActivateEffect={canActivateEffect}
+            wildcardKanji={getWildcardKanji(gameState, 'player')}
+            onDesignateMana={handleDesignateMana}
           />
         </div>
 

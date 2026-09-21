@@ -19,6 +19,7 @@ import type {
   RelativeSide,
   PlayerState,
 } from '../types';
+import { getEffectiveKanji } from './manaKanji';
 
 // --- 汎用ヘルパー ---
 
@@ -87,7 +88,8 @@ function countGraveyardKanji(
 ): number {
   const cemetery = getPlayerState(gameState, side).cemetery;
   if (targetKanji === 'all') return cemetery.length;
-  return cemetery.filter((c) => targetKanji.includes(c.kanji)).length;
+  return cemetery.filter((c) => targetKanji.includes(getEffectiveKanji(c)))
+    .length;
 }
 
 // 【追加・フェーズ5後半】「山札からrevealCount枚公開して墓地へ送り、公開カードが判定条件に
@@ -207,11 +209,22 @@ export function getPassiveList(monster: MonsterCard): PassiveEffect[] {
 //     記録: 泊の無効化範囲をこれら他の永続効果にも広げるかは未確認)。
 //   - FLIP_MONSTER内の泊自身の発動判定: 泊自身がこのゲートの対象になると、
 //     泊が永遠に発動できなくなる自己言及的な矛盾が生じるため対象外。
-function getPassiveListGatedByBan(
+//
+// 【今回追加・表向きガード】割り込み対象の永続効果は原文が揃って「このカードは
+// おもてむきのままにする」で始まる表向き固定の効果のため、裏向き(isFlipped:true、
+// ゲーム開始時の初期状態)の間は割り込みに関与させない。従来この確認が無く、
+// 裏向きのまま盤面に置いてあるだけで浮・抑・扱・囲等が効いていた。
+// 扱・返・圧・抑の消費時FLIP_MONSTER(トグル)は「表→裏」を前提にしており、裏向きのまま
+// 割り込むと逆に表向きになってしまう不具合も、このガードで同時に解消される。
+// getPassiveList自体には入れない(FLIP_MONSTERの泊検出は「裏→表になる瞬間」に読むため、
+// 常に空配列になり泊が発動できなくなる)。返す配列の並びは元と同じで、
+// passiveIndex/consumedPassiveIndexesとの対応はずれない。
+export function getPassiveListGatedByBan(
   monster: MonsterCard,
   gameState: GameState,
   side: PlayerSide,
 ): PassiveEffect[] {
+  if (monster.isFlipped) return [];
   if (isMonsterEffectsDisabledByOpponentBan(gameState, side)) return [];
   return getPassiveList(monster);
 }
@@ -265,30 +278,52 @@ interface RedirectMatch {
   passiveIndex: number;
   fixedCount?: number;
   consumeAfterUse: boolean;
+  // 消費されない転嫁(敵)が、同じ連鎖の中で再び発動しようとした=永遠に転嫁し合う状態
+  loop?: boolean;
 }
 
-// redirect_own_deck_reduce: 「自分の効果で自分の山札が減る」場合のみ対象(呼び出し側でtargetSide===actingSideを確認済み)。
+// redirect_own_deck_reduce: 山札が減る側(ownerSide)の未消費の転嫁を1件だけ採用する。
+// 【今回改訂】従来は「自分の効果で自分の山札が減る」場合(ownerSide===actingSide)しか見ておらず、
+// 相手の効果で自分の山札が減るときの敵・返・圧が発動しなかった(公式QA: 相手の泣に対して
+// 敵が発動する)。ownEffectOnly(扱)だけは自分の効果のときに限る。
 // fixedCount指定は常に適用。minCount/maxCount指定は元のamountがその範囲内の場合のみ適用し、
-// 適用時はamountをそのまま(同数)相手へ転嫁する(敵のケース)。未消費のものを先頭から1件だけ採用する。
+// 適用時はamountをそのまま(同数)相手へ転嫁する(敵のケース)。
+// usedは、この連鎖(転嫁の応酬)で既に使った転嫁のキー。消費される転嫁(返・圧)は使用済みなら
+// 裏向きに戻っているため候補から外し、消費されない転嫁(敵)が再び候補になったときはloopを返す
+// (公式QA: 敵と敵が表向きなら永遠に発動し合い、ダメージは無効になる)。
 function findApplicableRedirect(
   gameState: GameState,
+  ownerSide: PlayerSide,
   actingSide: PlayerSide,
   amount: number,
+  used: Set<string>,
 ): RedirectMatch | null {
-  const monsters = getPlayerState(gameState, actingSide).monsters;
+  const monsters = getPlayerState(gameState, ownerSide).monsters;
   for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
     const monster = monsters[monsterIndex];
-    const passives = getPassiveListGatedByBan(monster, gameState, actingSide);
+    const passives = getPassiveListGatedByBan(monster, gameState, ownerSide);
     for (let passiveIndex = 0; passiveIndex < passives.length; passiveIndex++) {
       const passive = passives[passiveIndex];
       if (passive.trigger !== 'redirect_own_deck_reduce') continue;
       if (isPassiveConsumed(monster, passiveIndex)) continue;
+      if (passive.ownEffectOnly && ownerSide !== actingSide) continue;
       const { minCount, maxCount, fixedCount } = passive.scope;
       const inRange =
         fixedCount !== undefined ||
         ((minCount === undefined || amount >= minCount) &&
           (maxCount === undefined || amount <= maxCount));
       if (!inRange) continue;
+      const key = `${ownerSide}:${monsterIndex}:${passiveIndex}`;
+      if (used.has(key)) {
+        if (passive.consumeAfterUse) continue;
+        return {
+          monsterIndex,
+          passiveIndex,
+          fixedCount,
+          consumeAfterUse: passive.consumeAfterUse,
+          loop: true,
+        };
+      }
       return {
         monsterIndex,
         passiveIndex,
@@ -426,28 +461,45 @@ export function applyDeckReducePassives(
     let targetSide = intent.targetSide;
     let amount = intent.amount + sumBoostAmount(gameState, actingSide);
 
-    if (targetSide === actingSide) {
-      const redirect = findApplicableRedirect(gameState, actingSide, amount);
-      if (redirect) {
-        amount = redirect.fixedCount ?? amount;
-        targetSide = getOpponentSide(actingSide);
-        if (redirect.consumeAfterUse) {
-          consumptions.push({
-            type: 'CONSUME_PASSIVE_EFFECT',
-            payload: {
-              side: actingSide,
-              monsterIndex: redirect.monsterIndex,
-              passiveIndex: redirect.passiveIndex,
-            },
-          });
-          // 【追加】扱・返・圧の原文「このカードをうらむきにもどす」対応。
-          // これらは表向き固定(isFlipped:false)の永続カードのため、1回消費時に
-          // FLIP_MONSTER(トグル)を1回発火させれば裏面(isFlipped:true)に切り替わる。
-          consumptions.push({
-            type: 'FLIP_MONSTER',
-            payload: { side: actingSide, monsterIndex: redirect.monsterIndex },
-          });
-        }
+    // 【今回改訂】転嫁(敵・返・圧・扱)。山札が減る側(targetSide)が持つ転嫁を、転嫁先の側が
+    // 持つ転嫁で更に転嫁し返す応酬まで扱う(上限あり)。敵と敵など、消費されない転嫁どうしが
+    // 永遠に発動し合う場合は、ダメージ自体を無効にする(公式QA)。
+    const usedRedirects = new Set<string>();
+    for (let hop = 0; hop < 8; hop++) {
+      const redirect = findApplicableRedirect(
+        gameState,
+        targetSide,
+        actingSide,
+        amount,
+        usedRedirects,
+      );
+      if (!redirect) break;
+      if (redirect.loop) {
+        amount = 0;
+        break;
+      }
+      const redirectOwner = targetSide;
+      usedRedirects.add(
+        `${redirectOwner}:${redirect.monsterIndex}:${redirect.passiveIndex}`,
+      );
+      amount = redirect.fixedCount ?? amount;
+      targetSide = getOpponentSide(redirectOwner);
+      if (redirect.consumeAfterUse) {
+        consumptions.push({
+          type: 'CONSUME_PASSIVE_EFFECT',
+          payload: {
+            side: redirectOwner,
+            monsterIndex: redirect.monsterIndex,
+            passiveIndex: redirect.passiveIndex,
+          },
+        });
+        // 【追加】扱・返・圧の原文「このカードをうらむきにもどす」対応。
+        // これらは表向き固定(isFlipped:false)の永続カードのため、1回消費時に
+        // FLIP_MONSTER(トグル)を1回発火させれば裏面(isFlipped:true)に切り替わる。
+        consumptions.push({
+          type: 'FLIP_MONSTER',
+          payload: { side: redirectOwner, monsterIndex: redirect.monsterIndex },
+        });
       }
     }
 
@@ -719,7 +771,9 @@ export function getActivatableEffect(
   const isOwnStartPhase =
     gameState.currentPhase === 'start' && gameState.turnPlayer === ownerSide;
 
-  if (isOwnStartPhase) {
+  // 【今回追加・表向きガード】詩・歩・脈・然の原文は「このカードはおもてむきのままにする」で
+  // 始まる表向き固定の永続効果のため、裏向き(isFlipped:true)の間は発動対象にしない。
+  if (isOwnStartPhase && !monster.isFlipped) {
     const startTrigger = getPassiveList(monster).find(
       (p): p is Extract<PassiveEffect, { trigger: 'own_turn_start' }> =>
         p.trigger === 'own_turn_start',
@@ -734,8 +788,13 @@ export function getActivatableEffect(
 
   // 【表面固定永続効果の発動ガード】囲・政は「このカードはおもてむきの
   // ままにする」永続効果を持ち、monster.effectは前準備発動として1回限りである
-  // (発動時にFLIP_MONSTERを伴わせる設計、effectSelection.ts参照)。
-  // isFlipped:true(裏向き=発動済み)の間は、effectを発動対象から除外する。
+  // 【今回改訂】1回限りの管理は、従来のFLIP_MONSTER(発動時に裏向き化)ではなく
+  // MonsterCard.preparationUsed(effectSelection.tsのMARK_PREPARATION_USEDで立てる)で行う。
+  // 裏向き化すると「おもてむきのままにする」という原文と矛盾し、政の勝利条件監視
+  // (!isFlipped)停止・囲のバッファ切れ時トグル逆転の不具合を生んだため。
+  // 次の場合、effectを発動対象から除外する:
+  //   - preparationUsed:true(発動済み。裏向きに戻ればFLIP_MONSTER側でクリアされる)
+  //   - isFlipped:true(裏向き。前準備は表向きの状態でのみ発動できる)
   // 【保は対象外】保も同種の永続効果だが、山札0枚時の自動返却処理
   // (useGameState.tsのreturnReservedCardsIfDeckEmpty)が「!m.isFlipped(表向き)」を
   // 対象探索の条件にしているため、発動時に裏向き化すると自動返却が機能しなくなる
@@ -749,29 +808,174 @@ export function getActivatableEffect(
   if (
     monster.effect &&
     FACE_UP_LOCKED_EFFECT_IDS.has(monster.effect.effectId) &&
-    monster.isFlipped
+    (monster.isFlipped || monster.preparationUsed)
   ) {
     return null;
   }
   return monster.effect ?? null;
 }
 
-// 【追加・仁/花】draw_replaceを持つ、表向きのモンスターを1体探し、そのpassiveEffectを返す。
-// ドローボタン起点の割り込み判定(App.tsx handleAutoDraw)から呼ばれる。
-export function findDrawReplacePassive(monsters: MonsterCard[]): {
-  monsterIndex: number;
-  passive: Extract<PassiveEffect, { trigger: 'draw_replace' }>;
-} | null {
-  for (let monsterIndex = 0; monsterIndex < monsters.length; monsterIndex++) {
-    const monster = monsters[monsterIndex];
-    if (monster.isFlipped) continue; // 表向き固定の永続効果のため、裏向きなら対象外
-    const passive = getPassiveList(monster).find(
+// 【今回追加】装備先モンスターの空きスロットの漢字(重複あり、スロット順)。
+// equippedManaはgenerateGameCards直後は[]で始まりnullで埋められていなかったため、
+// `=== null`で判定すると初期状態のモンスターが常に「空き無し」扱いになっていた。
+// SET_INITIAL_STATEでnull埋めに正規化した現在も、undefinedを空きとして扱う防御は残す。
+export function getOpenSlotKanji(monster: MonsterCard): string[] {
+  return monster.slots.filter((_, i) => !monster.equippedMana[i]);
+}
+
+// 【今回追加・命】ターン開始のドローで引く枚数。表向き(泊で無効化中でない)の命
+// (draw_count_override)がいればその枚数、いなければ1枚。
+export function getTurnStartDrawCount(
+  gameState: GameState,
+  side: PlayerSide,
+): number {
+  let count = 1;
+  getPlayerState(gameState, side).monsters.forEach((monster) => {
+    getPassiveListGatedByBan(monster, gameState, side).forEach((p) => {
+      if (p.trigger === 'draw_count_override') count = Math.max(count, p.count);
+    });
+  });
+  return count;
+}
+
+// 【今回追加・星/走】山札の上からn枚を順に引いたときに実際に引かれるカードを返す
+// (AUTO_DRAWの忍トラップ処理を再現: 引いたカードにtrapEffectがあれば、その直後に山札の上から
+// reduceCount枚が失われるため、以降に引かれるカードが変わる)。山札が尽きれば途中で打ち切る。
+export function simulateDeckDraws(deck: ManaCard[], n: number): ManaCard[] {
+  const remaining = [...deck];
+  const drawn: ManaCard[] = [];
+  for (let i = 0; i < n && remaining.length > 0; i++) {
+    const card = remaining.shift()!;
+    drawn.push(card);
+    if (card.trapEffect) remaining.splice(0, card.trapEffect.reduceCount);
+  }
+  return drawn;
+}
+
+// 【今回追加・星】on_draw(星): 「山札をひくときに発動する。日か月ならあいての山札を3まい墓地へ」。
+// drawerSide(星の所有者)が引いたカードの漢字(drawnKanji。複数枚可)を受け取り、対象となる
+// 山札減少を表すDAMAGE Actionを返す(効果による山札減少のため、呼び出し側で
+// applyDeckReducePassives(重・浮・抑・注等)を通すこと)。表向きで泊に無効化されていない星のみ
+// 有効。複数枚が一致する場合は、同じ対象への減少を1つのActionに合算する。
+export function getStarReactionActions(
+  gameState: GameState,
+  drawerSide: PlayerSide,
+  drawnKanji: string[],
+): GameAction[] {
+  const totals: Partial<Record<PlayerSide, number>> = {};
+  getPlayerState(gameState, drawerSide).monsters.forEach((monster) => {
+    getPassiveListGatedByBan(monster, gameState, drawerSide).forEach((p) => {
+      if (p.trigger !== 'on_draw') return;
+      const hits = drawnKanji.filter((k) => p.targetKanji.includes(k)).length;
+      if (hits === 0) return;
+      const target = resolveSide(p.onMatch.targetSide, drawerSide);
+      totals[target] = (totals[target] ?? 0) + hits * p.onMatch.count;
+    });
+  });
+  return (Object.entries(totals) as [PlayerSide, number][]).map(
+    ([targetSide, amount]): GameAction => ({
+      type: 'DAMAGE',
+      payload: { targetSide, amount },
+    }),
+  );
+}
+
+// 【今回追加・流】on_opponent_draw_predict(流): drawerSideが山札から引く際に予想を行う、
+// 表向きで泊に無効化されていない流(drawerSideの相手側が所有)を探し、的中時に墓地へ送る枚数
+// (引いたマナを含む)を返す。いなければnull。
+export function getFlowWatcher(
+  gameState: GameState,
+  drawerSide: PlayerSide,
+): { watcherSide: PlayerSide; hitCount: number } | null {
+  const watcherSide = getOpponentSide(drawerSide);
+  for (const monster of getPlayerState(gameState, watcherSide).monsters) {
+    for (const p of getPassiveListGatedByBan(monster, gameState, watcherSide)) {
+      if (p.trigger === 'on_opponent_draw_predict') {
+        return { watcherSide, hitCount: p.onHit.count };
+      }
+    }
+  }
+  return null;
+}
+
+// 【今回追加・花】side側の、表向きで泊に無効化されていない花(mana_kanji_wildcard)の対象漢字
+// (屮)を返す。いなければnull。色の新規指定・装備時の自動指定・選択候補の拡張に使う。
+export function getWildcardKanji(
+  gameState: GameState,
+  side: PlayerSide,
+): string | null {
+  for (const monster of getPlayerState(gameState, side).monsters) {
+    for (const p of getPassiveListGatedByBan(monster, gameState, side)) {
+      if (p.trigger === 'mana_kanji_wildcard') return p.targetKanji;
+    }
+  }
+  return null;
+}
+
+// 【今回追加・仁/花】墓地のマナ(card)を、side側のいずれかのモンスターにつけられるか。
+// 公式QA: 仁・花は「つけられるマナが墓地にないときは山札から引く」。判定は、取り除かれて
+// いないモンスターに、そのマナの漢字と同じ空きスロットがあること。表向きの花
+// (mana_kanji_wildcard)がいるときは、その対象漢字のマナはどの空きスロットにもつけられる
+// (万能マナ。花の色指定機構そのものは未実装だが、置き換え判定が不当に外れないよう考慮する)。
+function isManaAttachableToOwnMonster(
+  gameState: GameState,
+  side: PlayerSide,
+  card: ManaCard,
+): boolean {
+  const monsters = getPlayerState(gameState, side).monsters;
+  const isWildcard = monsters.some((m) =>
+    getPassiveListGatedByBan(m, gameState, side).some(
+      (p) =>
+        p.trigger === 'mana_kanji_wildcard' && p.targetKanji === card.kanji,
+    ),
+  );
+  return monsters.some((m) => {
+    if (m.isRemovedFromGame) return false;
+    const open = getOpenSlotKanji(m);
+    return isWildcard
+      ? open.length > 0
+      : open.includes(getEffectiveKanji(card));
+  });
+}
+
+// 【今回改訂・仁/花のdraw_replace】ドローボタン起点の割り込み判定(App.tsx handleAutoDraw)から
+// 呼ばれる。従来のfindDrawReplacePassiveを置き換えた。公式QAに基づく変更点:
+//   - 相手の泊で無効化中(getPassiveListGatedByBan)なら置き換えない(通常どおり山札から引く)
+//   - つけられるマナが墓地に無ければ置き換えない(山札から引く。意図的に避けることはできない)
+//   - 仁の候補は「つけられるマナ」に限定する
+//   - 仁と花が両方表向きなら、どちらか一方を選ぶだけで2枚にはならない。仁の自由選択は
+//     花(屮固定)を包含するため、仁を優先する
+export type DrawReplacePlan =
+  | { kind: 'none' }
+  | { kind: 'auto'; cardId: string } // 花: 選択UI不要で自動採用
+  | { kind: 'choose'; candidateIds: string[] }; // 仁: 候補から1枚を選ばせる
+
+export function resolveDrawReplace(
+  gameState: GameState,
+  side: PlayerSide,
+): DrawReplacePlan {
+  const playerState = getPlayerState(gameState, side);
+  const passives = playerState.monsters
+    .flatMap((m) => getPassiveListGatedByBan(m, gameState, side))
+    .filter(
       (p): p is Extract<PassiveEffect, { trigger: 'draw_replace' }> =>
         p.trigger === 'draw_replace',
     );
-    if (passive) return { monsterIndex, passive };
+  if (passives.length === 0) return { kind: 'none' };
+
+  const attachable = playerState.cemetery.filter((c) =>
+    isManaAttachableToOwnMonster(gameState, side, c),
+  );
+
+  if (passives.some((p) => !p.sourceKanji)) {
+    return attachable.length > 0
+      ? { kind: 'choose', candidateIds: attachable.map((c) => c.id) }
+      : { kind: 'none' };
   }
-  return null;
+
+  const fixedKanji = passives[0].sourceKanji;
+  const card = attachable.find((c) => c.kanji === fixedKanji);
+  return card ? { kind: 'auto', cardId: card.id } : { kind: 'none' };
 }
 
 // 【追加・激】own_turn_end_predict_winを持つ、表向きのモンスターのindexを探す。
@@ -787,6 +991,70 @@ export function findOwnTurnEndPredictWinMonsterIndex(
         (p) => p.trigger === 'own_turn_end_predict_win',
       ),
   );
+}
+
+// 【今回追加・音】janken_auto_win(音): 「じゃんけんが必要になったとき、勝ったことになる」。
+// 効果由来のじゃんけん(言・信・競・招・右・哲・詩)を解決する際、発動者(ownerSide)側・相手側の
+// 表向きの音(泊で無効化中のものは除く)を確認し、じゃんけん自体を省略して結果を確定できるか返す。
+//   - 発動者側のみ音あり → 'win'
+//   - 相手側のみ音あり   → 'lose'(相手が勝ったことになる。両者の音が同じ扱いで効くことは
+//                          公式QA「音と音が両方表向きなら効果をかき消す」から裏付けられる)
+//   - 両者とも音あり     → null(音の効果をかき消し、通常のじゃんけん。公式QA 2026年6月時点)
+//   - どちらも無し       → null(通常のじゃんけん)
+// 先攻後攻決定じゃんけん(全モンスターが裏向きで開始)と手動のじゃんけんツールは対象外。
+export function getJankenAutoOutcome(
+  gameState: GameState,
+  ownerSide: PlayerSide,
+): 'win' | 'lose' | null {
+  const hasAutoWin = (side: PlayerSide): boolean =>
+    getPlayerState(gameState, side).monsters.some((monster) =>
+      getPassiveListGatedByBan(monster, gameState, side).some(
+        (p) => p.trigger === 'janken_auto_win',
+      ),
+    );
+  const own = hasAutoWin(ownerSide);
+  const opp = hasAutoWin(getOpponentSide(ownerSide));
+  if (own && !opp) return 'win';
+  if (!own && opp) return 'lose';
+  return null;
+}
+
+// じゃんけんの決着結果(win/tie/lose)から、dispatchすべきActionを組み立てる。
+// JankenModalの結果を受けるbuildActionsFromSelectionと、音による自動決着
+// (resolveMonsterEffect)の両方から使う共通処理。
+export function buildJankenOutcomeActions(
+  effect: Extract<MonsterEffect, { effectId: 'janken_conditional_reduce' }>,
+  ownerSide: PlayerSide,
+  gameState: GameState,
+  outcome: 'win' | 'tie' | 'lose',
+): GameAction[] {
+  let targetSide: PlayerSide;
+  let count: number;
+  if (outcome === 'win') {
+    targetSide = getOpponentSide(ownerSide);
+    count = effect.winCount ?? 0;
+  } else if (outcome === 'tie') {
+    targetSide = getOpponentSide(ownerSide);
+    count = effect.tieCount ?? 0;
+  } else {
+    targetSide = ownerSide;
+    count = effect.loseCount ?? 0;
+  }
+  if (count <= 0) return [];
+  const cardIds = takeTopDeckIds(gameState, targetSide, count);
+  if (cardIds.length === 0) return [];
+  return [
+    {
+      type: 'MOVE_CARD_BETWEEN_ZONES',
+      payload: {
+        sourceSide: targetSide,
+        targetSide,
+        cardIds,
+        sourceZone: 'deck',
+        targetZone: 'cemetery',
+      },
+    },
+  ];
 }
 
 export interface ExecutorContext {
@@ -823,6 +1091,19 @@ export function resolveMonsterEffect(
   // 空にする。nullではなく空配列[]を返す点に注意(nullは選択UIへの誘導を意味する
   // 既存の意味論のため、無効化時にnullを返すと誤って選択誘導フローに乗ってしまう)。
   if (isMonsterEffectsDisabledByOpponentBan(gameState, ownerSide)) {
+    // 【今回追加・育】公式QA: 泊で無効にされても育の発動回数はカウントされる(発動はしている、
+    // ダメージはない)。カウンタのインクリメントだけは行う。
+    if (
+      effect.effectId === 'deck_reduce_scaling_by_activation_count' &&
+      ctx.sourceMonsterIndex !== undefined
+    ) {
+      return [
+        {
+          type: 'INCREMENT_ACTIVATION_COUNT',
+          payload: { side: ownerSide, monsterIndex: ctx.sourceMonsterIndex },
+        },
+      ];
+    }
     return [];
   }
 
@@ -1083,7 +1364,7 @@ export function resolveMonsterEffect(
         ownerSide,
         ownerSide, // 自分の山札固定（誓のカード原文で確認。型にside項目が無いのも同じ理由と推測）
         effect.revealCount,
-        (card) => targetKanjiList.includes(card.kanji),
+        (card) => targetKanjiList.includes(getEffectiveKanji(card)),
         effect.onMatch,
         effect.onMiss,
       );
@@ -1094,13 +1375,20 @@ export function resolveMonsterEffect(
     // 何枚・どのカードが対象になるか一意に確定できる。
     case 'deck_iterative_reveal_until_condition': {
       const targetSide = resolveSide(effect.targetSide, ownerSide);
+      // 【今回追加・戒×浮】公式QA: 1枚ずつ送るたびに浮が発動して1枚も送れない(=1回あたりの
+      // 枚数が0以下になる)と、いつまでも終わらないため効果を終了する(何も送らない)。
+      const perStep =
+        1 +
+        (targetSide !== ownerSide ? sumBoostAmount(gameState, ownerSide) : 0) -
+        sumMitigateAmount(gameState, targetSide);
+      if (perStep <= 0) return [];
       const deck = getPlayerState(gameState, targetSide).deck;
       const seenKanji = new Set<string>();
       const movedIds: string[] = [];
 
       for (const card of deck) {
         movedIds.push(card.id);
-        seenKanji.add(card.kanji);
+        seenKanji.add(getEffectiveKanji(card));
 
         const hitDistinct =
           effect.stopConditions.maxDistinctKanji !== undefined &&
@@ -1140,12 +1428,21 @@ export function resolveMonsterEffect(
       return allActions;
     }
 
+    // 【今回追加・音】表向きの音でじゃんけんの結果が確定する場合のみ、ここで自動解決する
+    // (JankenModalを開かない)。音が関与しない通常のケースはnullを返し、従来どおり
+    // effectSelection.tsのjanken_select(JankenModal)へ誘導される。
+    case 'janken_conditional_reduce': {
+      const auto = getJankenAutoOutcome(gameState, ownerSide);
+      if (auto === null) return null;
+      return buildJankenOutcomeActions(effect, ownerSide, gameState, auto);
+    }
+
     case 'graveyard_select_recover': {
       // count:'all'の場合のみ選択不要(養で確認)。数値指定は選択が必要なためnull(effectSelection.ts側で対応)
       if (effect.count !== 'all') return null;
       const cemetery = getPlayerState(gameState, ownerSide).cemetery;
       const matches = effect.targetKanji
-        ? cemetery.filter((c) => c.kanji === effect.targetKanji)
+        ? cemetery.filter((c) => getEffectiveKanji(c) === effect.targetKanji)
         : cemetery;
       if (matches.length === 0) return [];
       const cardIds = matches.map((c) => c.id);
@@ -1171,6 +1468,36 @@ export function resolveMonsterEffect(
         actions.push({ type: 'SHUFFLE_DECK', payload: { side: ownerSide } });
       }
       return actions;
+    }
+
+    // 【今回追加・走】山札から2枚(count)めくってプレイする。めくり自体はAUTO_DRAWを直接
+    // 発行する(ターン開始のドローではないため、仁・花の置き換えの対象外。公式QA)。
+    // 山札が足りず引ききれなかった分は残りドロー回数(kind:'effect')として保持し、山札が
+    // 回復したあとにドローボタンで引き直せる(FAQ「1枚目のプレイで山札が回復すれば2枚目も
+    // プレイ可能」)。忍のトラップはAUTO_DRAW内で処理されるため、FAQの順
+    // (めくる → 忍 → めくる)が自然に再現される。
+    case 'draw_and_play_n': {
+      const available = getPlayerState(gameState, ownerSide).deck.length;
+      const drawCount = Math.min(effect.count, available);
+      if (drawCount === 0) return [];
+      const shortage = effect.count - drawCount;
+      const draws = Array.from({ length: drawCount }, (_, i): GameAction => ({
+        type: 'AUTO_DRAW',
+        payload: {
+          player: ownerSide,
+          ...(i === drawCount - 1 && shortage > 0
+            ? { remainingDrawsAfter: { count: shortage, kind: 'effect' as const } }
+            : {}),
+        },
+      }));
+      // 【今回追加・星】走のめくりも「山札をひく」として星の反応を判定する(忍のトラップと
+      // 同じ扱い)。山札減少はdispatchWithPassivesが通すapplyDeckReducePassivesで軽減・ブロック
+      // 等が適用される。流は予想の入力が必要なため走のめくりには適用しない(既知の限界)。
+      const drawnKanji = simulateDeckDraws(
+        getPlayerState(gameState, ownerSide).deck,
+        drawCount,
+      ).map((c) => getEffectiveKanji(c));
+      return [...draws, ...getStarReactionActions(gameState, ownerSide, drawnKanji)];
     }
 
     case 'swap_deck_and_graveyard': {
@@ -1374,7 +1701,6 @@ export function resolveMonsterEffect(
     // 以下、選択・外部システム（勝敗判定）接続・複雑な副作用のいずれかが必要なため未対応（null）。
     // 対応が必要になった時点で、既存UI（DeckModal/JankenModal/MoveDestinationSelector）との
     // 連携方式を別途設計すること（design_document.md 7.8章参照）。
-    case 'janken_conditional_reduce': // 【フェーズ5後半】JankenModal連携でeffectSelection.ts側にて対応済み
     case 'deck_predict_reveal_reduce': // 同上（KanjiTypePickerModal流用でeffectSelection.ts側にて対応済み）
     case 'deck_compare_branch': // 同上（少ない方の判定＋graveyard_select_recover委譲でeffectSelection.ts側にて対応済み）
     case 'graveyard_select_equip':
@@ -1392,7 +1718,6 @@ export function resolveMonsterEffect(
     case 'mixed_zone_select_trash':
     case 'graveyard_recover_then_deck_trash_matching_count':
     case 'monster_remove_from_game':
-    case 'draw_and_play_n':
     case 'deck_predict_full_composition_win': // 相手山札の構成を丸ごと予想する新規UIが未設計のため保留
     case 'select_zone_move_one':
     case 'flip_monster_facedown':

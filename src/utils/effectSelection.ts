@@ -11,6 +11,7 @@
 import type {
   GameAction,
   GameState,
+  ManaCard,
   MonsterCard,
   MonsterEffect,
   PlayerSide,
@@ -23,7 +24,11 @@ import {
   getPlayerState,
   resolveRevealCheckActions,
   isMonsterEffectsDisabledByOpponentBan,
+  buildJankenOutcomeActions,
+  getOpenSlotKanji,
+  getWildcardKanji,
 } from './effectExecutor';
+import { getEffectiveKanji } from './manaKanji';
 
 // --- DeckModalに「カードを選ばせる」ケース ---
 export interface DeckSelectRequirement {
@@ -55,6 +60,9 @@ export interface DeckKanjiRevealSelectRequirement {
   revealScope: 'full' | number;
   kanjiCount: number;
   perTypeLimit?: number;
+  // 【今回追加】trueなら、公開した山札に無い漢字も指定できる(検。公式QA: 相手の山札にない
+  // マナを指定できる)。派(上から8枚の中から選ぶ)はfalse。
+  allowAnyKanji?: boolean;
 }
 
 // --- CemeteryAndExileModalに「墓地のカードを選ばせる」ケース ---
@@ -180,6 +188,21 @@ function getDisabledMonstersForSelect(
     .map(({ index }) => ({ index, reason: 'removed_from_game' as const }));
 }
 
+// 【今回追加・花】空きスロット(openKanji)につけられるカードか。花が表向きなら、万能マナ
+// (屮)は空きスロットがあればどの漢字のスロットにもつけられる(装備時にそのスロットの
+// 漢字へ自動で色が指定される)。それ以外は、実効的な漢字が空きスロットの漢字と一致すること。
+function canFillOpenSlot(
+  card: ManaCard,
+  openKanji: string[],
+  wildcardKanji: string | null,
+): boolean {
+  if (openKanji.length === 0) return false;
+  return (
+    openKanji.includes(getEffectiveKanji(card)) ||
+    (wildcardKanji !== null && card.kanji === wildcardKanji)
+  );
+}
+
 /**
  * resolveMonsterEffectがnullを返した効果に対して、既存UIへの誘導が可能か判定する。
  * 対応するUIがまだ無い効果はnullを返す。
@@ -204,22 +227,76 @@ export function describeSelectionRequirement(
       };
     }
 
+    // 【今回改訂】令・草: graveyard_select_equipと同じ多段階選択(phase1: 装備先モンスター、
+    // phase2: 山札のカード)。従来は装備先が発動元自身に固定されていた(草の「このカードには
+    // つけられない」も無視されていた)。装備先の空きスロットに対応する漢字のカードだけを
+    // 候補にし(7.18章と同方針)、選択可能枚数も実際の候補数で頭打ちにする。
     case 'deck_select_equip':
-      return {
-        kind: 'deck_select',
-        side: ctx.ownerSide,
-        constraint: { min: effect.count, max: effect.count },
-        actionLabel: '選択したカードを装備',
-      };
+    case 'deck_kanji_search_equip': {
+      const ownMonsters = getPlayerState(ctx.gameState, ctx.ownerSide).monsters;
+      if (
+        effect.monsterTargetMode &&
+        ctx.equipTargetMonsterIndex === undefined
+      ) {
+        if (ctx.sourceMonsterIndex === undefined) return null;
+        return {
+          kind: 'monster_select',
+          side: ctx.ownerSide,
+          constraint: { min: 1, max: 1 },
+          excludeMonsterIndex:
+            effect.monsterTargetMode === 'exclude_self'
+              ? ctx.sourceMonsterIndex
+              : undefined,
+          disabledMonsters: getDisabledMonstersForSelect(
+            effect.effectId,
+            ownMonsters,
+          ),
+        };
+      }
 
-    case 'deck_kanji_search_equip':
+      const targetIdx = ctx.equipTargetMonsterIndex ?? ctx.sourceMonsterIndex;
+      const target =
+        targetIdx !== undefined ? ownMonsters[targetIdx] : undefined;
+      if (!target) return null;
+      const deck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+      const openSlots = getOpenSlotKanji(target);
+
+      const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
+
+      if (effect.effectId === 'deck_kanji_search_equip') {
+        // 花が表向きで、対象の漢字が万能マナ(屮)自身なら、どの空きスロットにもつけられる
+        const openCount =
+          wildcard === effect.targetKanji
+            ? openSlots.length
+            : openSlots.filter((k) => k === effect.targetKanji).length;
+        const deckCount = deck.filter(
+          (c) => getEffectiveKanji(c) === effect.targetKanji || c.kanji === effect.targetKanji,
+        ).length;
+        const cappedMax = Math.min(effect.maxCount, openCount, deckCount);
+        if (cappedMax === 0) return null; // 装備できる候補が無ければ効果不発
+        return {
+          kind: 'deck_select',
+          side: ctx.ownerSide,
+          constraint: { min: 0, max: cappedMax },
+          kanjiFilter: [effect.targetKanji],
+          actionLabel: '選択したカードを装備',
+        };
+      }
+
+      const openKanji = Array.from(new Set(openSlots));
+      const eligibleCount = deck.filter((c) =>
+        canFillOpenSlot(c, openKanji, wildcard),
+      ).length;
+      const cappedCount = Math.min(effect.count, eligibleCount);
+      if (cappedCount === 0) return null;
       return {
         kind: 'deck_select',
         side: ctx.ownerSide,
-        constraint: { min: 0, max: effect.maxCount },
-        kanjiFilter: [effect.targetKanji],
+        constraint: { min: cappedCount, max: cappedCount },
+        kanjiFilter: wildcard ? [...openKanji, wildcard] : openKanji,
         actionLabel: '選択したカードを装備',
       };
+    }
 
     // ============ 今回実装: DeckModalでの並び替え ============
     // 【今回改訂】'both'（並・詳）を新規対応。1巡目はctx.ownerSide、2巡目は相手側の順で
@@ -282,6 +359,7 @@ export function describeSelectionRequirement(
         revealScope: effect.revealScope,
         kanjiCount,
         perTypeLimit,
+        allowAnyKanji: effect.revealScope === 'full',
       };
     }
 
@@ -342,21 +420,17 @@ export function describeSelectionRequirement(
             ]
           : undefined;
       const availableKanji = targetMonster
-        ? Array.from(
-            new Set(
-              targetMonster.slots.filter(
-                (_, i) => targetMonster.equippedMana[i] === null,
-              ),
-            ),
-          )
+        ? Array.from(new Set(getOpenSlotKanji(targetMonster)))
         : undefined;
 
       // 【追加】墓地の実際の対象カード枚数(スロット適合・sourceRestriction込み)で頭打ちにする
       const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+      const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
       const eligibleCount = cemetery.filter((c) => {
         if (restrictionFilter && !restrictionFilter.includes(c.id))
           return false;
-        if (availableKanji && !availableKanji.includes(c.kanji)) return false;
+        if (availableKanji && !canFillOpenSlot(c, availableKanji, wildcard))
+          return false;
         return true;
       }).length;
       const cappedCount = Math.min(effect.count, eligibleCount);
@@ -366,7 +440,10 @@ export function describeSelectionRequirement(
         kind: 'graveyard_select',
         side: ctx.ownerSide,
         constraint: { min: cappedCount, max: cappedCount },
-        kanjiFilter: availableKanji,
+        kanjiFilter:
+          availableKanji && wildcard && availableKanji.length > 0
+            ? [...availableKanji, wildcard]
+            : availableKanji,
         cardIdFilter: restrictionFilter,
         actionLabel: '選択したカードを装備',
       };
@@ -526,10 +603,13 @@ export function describeSelectionRequirement(
     // maxNumberは現在の山札枚数(発動時点で変動するため動的に算出)。
     case 'deck_partial_to_reserve': {
       const deck = getPlayerState(ctx.gameState, ctx.ownerSide).deck;
+      // 【今回改訂】公式QA: このカードの上に置く枚数はゼロにできない。選ぶ数値は「山札に
+      // 残す枚数」なので、最大は山札枚数-1(最低1枚は置く)。山札が空なら発動できない。
+      if (deck.length === 0) return null;
       return {
         kind: 'number_select',
         minNumber: 0,
-        maxNumber: deck.length,
+        maxNumber: deck.length - 1,
       };
     }
 
@@ -714,7 +794,7 @@ function collectKanjiPurgeCardIds(
   const scope = scopeLimit === undefined ? deck : deck.slice(0, scopeLimit);
   const cardIds: string[] = [];
   for (const kanji of selectedKanji) {
-    const matches = scope.filter((c) => c.kanji === kanji);
+    const matches = scope.filter((c) => getEffectiveKanji(c) === kanji);
     const taken =
       perTypeLimit === undefined ? matches : matches.slice(0, perTypeLimit);
     cardIds.push(...taken.map((c) => c.id));
@@ -797,13 +877,16 @@ export function buildActionsFromSelection(
     case 'deck_select_equip':
     case 'deck_kanji_search_equip': {
       if (answer.kind !== 'deck_select') return null;
-      // 発動元モンスターが不明な場合は組み立て不可(発動トリガーUI実装後に配線される想定)
-      if (ctx.sourceMonsterIndex === undefined) return null;
+      // 【今回改訂】phase1(monster_select)で装備先が選ばれていればそちらを優先
+      // (graveyard_select_equipと同じ扱い)。未選択なら従来通り発動元自身。
+      const equipTargetIndex =
+        ctx.equipTargetMonsterIndex ?? ctx.sourceMonsterIndex;
+      if (equipTargetIndex === undefined) return null;
       return answer.selectedCardIds.map((cardId) => ({
         type: 'EQUIP_SPECIFIC_MANA',
         payload: {
           side: ctx.ownerSide,
-          monsterIndex: ctx.sourceMonsterIndex!,
+          monsterIndex: equipTargetIndex,
           sourceZone: 'deck',
           manaCardId: cardId,
         },
@@ -1128,17 +1211,18 @@ export function buildActionsFromSelection(
       if (!targetMonster) return null;
 
       const requiredKanji = Array.from(
-        new Set(
-          targetMonster.slots.filter(
-            (_, i) => targetMonster.equippedMana[i] === null,
-          ),
-        ),
+        new Set(getOpenSlotKanji(targetMonster)),
       );
 
       const cemetery = [...playerState.cemetery];
       const actions: GameAction[] = [];
+      const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
       requiredKanji.forEach((kanji) => {
-        const cardIndex = cemetery.findIndex((c) => c.kanji === kanji);
+        // 同じ色のマナを優先し、無ければ(花が表向きなら)万能マナ(屮)で代用する
+        let cardIndex = cemetery.findIndex((c) => getEffectiveKanji(c) === kanji);
+        if (cardIndex === -1 && wildcard) {
+          cardIndex = cemetery.findIndex((c) => c.kanji === wildcard);
+        }
         if (cardIndex === -1) return; // 墓地に該当色が無ければスキップ(不発)
         const [card] = cemetery.splice(cardIndex, 1); // 同じ実体を2回使わないよう候補から除去
         actions.push({
@@ -1211,7 +1295,7 @@ export function buildActionsFromSelection(
     // 山札0枚時の自動返却処理(useGameState.tsのreturnReservedCardsIfDeckEmpty)が
     // 「!m.isFlipped(表向き)」を対象探索の条件にしており、発動時に裏向き化すると
     // 自動返却が機能しなくなる致命的な矛盾が生じるため、保は従来通り「発動後も
-    // 表向きのまま」の挙動を維持する(囲・政のみ1回限りでFLIP_MONSTERを伴わせる)。
+    // 表向きのまま」の挙動を維持する(囲・政のみ1回限りとし、MARK_PREPARATION_USEDで管理する)。
     case 'deck_partial_to_reserve': {
       if (answer.kind !== 'number_select') return null;
       if (ctx.sourceMonsterIndex === undefined) return null;
@@ -1252,10 +1336,14 @@ export function buildActionsFromSelection(
           targetZone: 'deck',
         },
       });
-      actions.push({ type: 'SHUFFLE_DECK', payload: { side } });
+      // 【今回改訂】公式QA(2026年4月): 化はシャッフルしない(山札を見ずに人のマナを好きな
+      // 場所へ戻し、次に山札を見て人以外を墓地へ捨てる)。戻す位置の指定UIは未実装のため、
+      // 戻したマナは山札の一番上に置かれる(並び替えモードで調整可能)。
       // 回復と同数、trashExcludeKanji以外を山札の上から墓地へ(回復前のdeckを基準に選定して問題ない)
       const deck = getPlayerState(ctx.gameState, side).deck;
-      const eligible = deck.filter((c) => c.kanji !== effect.trashExcludeKanji);
+      const eligible = deck.filter(
+        (c) => getEffectiveKanji(c) !== effect.trashExcludeKanji,
+      );
       const trashIds = eligible.slice(0, recoveredCount).map((c) => c.id);
       if (trashIds.length > 0) {
         actions.push({
@@ -1273,8 +1361,11 @@ export function buildActionsFromSelection(
     }
 
     // 【追加】囲: 選択された墓地カードをreservedCardsへ送る(墓地起点)。
-    // 【今回追加】表面固定永続効果の発動ガード対応: 前準備発動は1回限とし、
-    // 発動と同時にFLIP_MONSTER(裏向き化)を伴わせる(ユーザー確認済み)。
+    // 【今回改訂】表面固定永続効果の発動ガード: 前準備発動は1回限りとし、発動と同時に
+    // MARK_PREPARATION_USED(発動済みマーク)を立てる。従来のFLIP_MONSTER(裏向き化)は
+    // 「おもてむきのままにする」という原文と矛盾し、バッファ切れ時のトグルが逆転する
+    // 不具合を生んだため廃止した(表裏はisFlippedのまま維持され、バッファ切れ時の
+    // FLIP_MONSTERで初めて裏向きに戻る)。
     case 'graveyard_partial_to_reserve': {
       if (answer.kind !== 'graveyard_select') return null;
       if (ctx.sourceMonsterIndex === undefined) return null;
@@ -1289,7 +1380,7 @@ export function buildActionsFromSelection(
           },
         },
         {
-          type: 'FLIP_MONSTER',
+          type: 'MARK_PREPARATION_USED',
           payload: {
             side: ctx.ownerSide,
             monsterIndex: ctx.sourceMonsterIndex,
@@ -1302,8 +1393,9 @@ export function buildActionsFromSelection(
     // 移動した各カードにseededByタグ(markedBySide=自分)を付ける。
     // own_turn_startパイプライン(seeded_mana_return_win_condition)がこのタグを見て
     // 「相手の墓地にあるか」を毎自ターン開始時に判定する。
-    // 【今回追加】表面固定永続効果の発動ガード対応: 前準備発動は1回限とし、
-    // 発動と同時にFLIP_MONSTER(裏向き化)を伴わせる(ユーザー確認済み)。
+    // 【今回改訂】表面固定永続効果の発動ガード: 前準備発動は1回限りとし、発動と同時に
+    // MARK_PREPARATION_USED(発動済みマーク)を立てる。FLIP_MONSTERで裏向き化すると
+    // 政の勝利条件監視(!isFlipped)が止まってしまうため廃止した。
     case 'deck_seed_mana_win_condition': {
       if (answer.kind !== 'graveyard_select') return null;
       if (ctx.sourceMonsterIndex === undefined) return null;
@@ -1313,7 +1405,7 @@ export function buildActionsFromSelection(
       if (cardIds.length === 0) {
         return [
           {
-            type: 'FLIP_MONSTER',
+            type: 'MARK_PREPARATION_USED',
             payload: {
               side: ownerSide,
               monsterIndex: ctx.sourceMonsterIndex,
@@ -1338,7 +1430,7 @@ export function buildActionsFromSelection(
           payload: { side: opponentSide, cardIds, markedBySide: ownerSide },
         },
         {
-          type: 'FLIP_MONSTER',
+          type: 'MARK_PREPARATION_USED',
           payload: {
             side: ownerSide,
             monsterIndex: ctx.sourceMonsterIndex,
@@ -1358,34 +1450,12 @@ export function buildActionsFromSelection(
     // 哲の原文「かち▷あいて／あいこ▷あいて／まけ▷じぶん」で確認した対応関係に基づく。
     case 'janken_conditional_reduce': {
       if (answer.kind !== 'janken_select') return null;
-      let targetSide: PlayerSide;
-      let count: number;
-      if (answer.outcome === 'win') {
-        targetSide = getOpponentSide(ctx.ownerSide);
-        count = effect.winCount ?? 0;
-      } else if (answer.outcome === 'tie') {
-        targetSide = getOpponentSide(ctx.ownerSide);
-        count = effect.tieCount ?? 0;
-      } else {
-        targetSide = ctx.ownerSide;
-        count = effect.loseCount ?? 0;
-      }
-      if (count <= 0) return [];
-      const deck = getPlayerState(ctx.gameState, targetSide).deck;
-      const cardIds = deck.slice(0, count).map((c) => c.id);
-      if (cardIds.length === 0) return [];
-      return [
-        {
-          type: 'MOVE_CARD_BETWEEN_ZONES',
-          payload: {
-            sourceSide: targetSide,
-            targetSide: targetSide,
-            cardIds,
-            sourceZone: 'deck',
-            targetZone: 'cemetery',
-          },
-        },
-      ];
+      return buildJankenOutcomeActions(
+        effect,
+        ctx.ownerSide,
+        ctx.gameState,
+        answer.outcome,
+      );
     }
 
     // 【追加】告・呪・推・竜・善・名: 宣言した漢字と、公開したrevealCount枚が一致するかで分岐
@@ -1399,7 +1469,7 @@ export function buildActionsFromSelection(
         ctx.ownerSide,
         revealSide,
         effect.revealCount ?? 1,
-        (card) => card.kanji === declaredKanji,
+        (card) => getEffectiveKanji(card) === declaredKanji,
         effect.onHit,
         effect.onMiss,
       );
@@ -1415,7 +1485,7 @@ export function buildActionsFromSelection(
         ctx.ownerSide,
         ctx.ownerSide, // 自分の山札固定
         effect.revealCount,
-        (card) => card.kanji === declaredKanji,
+        (card) => getEffectiveKanji(card) === declaredKanji,
         effect.onMatch,
         effect.onMiss,
       );

@@ -52,7 +52,13 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   // 格（カク）
   m00010: { effect: { effectId: 'deck_reduce_fixed', count: 5 } },
   // 各（カク）
-  m00011: { effect: { effectId: 'graveyard_select_equip', count: 1 } },
+  m00011: {
+    effect: {
+      effectId: 'graveyard_select_equip',
+      count: 1,
+      monsterTargetMode: 'include_self',
+    },
+  },
   // 告（コク）
   m00012: {
     effect: {
@@ -94,7 +100,13 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
   // 右（ウ）
   m00020: { effect: { effectId: 'janken_conditional_reduce', winCount: 5 } },
   // 共（キョウ）
-  m00021: { effect: { effectId: 'graveyard_select_equip', count: 1 } },
+  m00021: {
+    effect: {
+      effectId: 'graveyard_select_equip',
+      count: 1,
+      monsterTargetMode: 'include_self',
+    },
+  },
   // 援（エン）
   m00022: {
     effect: {
@@ -273,7 +285,13 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
     },
   },
   // 令（レイ）
-  m00048: { effect: { effectId: 'deck_select_equip', count: 1 } },
+  m00048: {
+    effect: {
+      effectId: 'deck_select_equip',
+      count: 1,
+      monsterTargetMode: 'include_self',
+    },
+  },
   // 合（ゴウ）
   m00049: {
     effect: { effectId: 'deck_compare_reduce', count: 5, tieBehavior: 'both' },
@@ -618,6 +636,7 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       trigger: 'redirect_own_deck_reduce',
       scope: { fixedCount: 5 },
       consumeAfterUse: true,
+      ownEffectOnly: true,
     },
   },
   // 戒（カイ）
@@ -639,7 +658,7 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       effectId: 'deck_kanji_search_equip',
       targetKanji: '屮',
       maxCount: 3,
-      excludeSelf: true,
+      monsterTargetMode: 'exclude_self',
     },
   },
   // 花: 同時に2つの永続効果を持つため配列で表現

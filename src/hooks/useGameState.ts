@@ -5,14 +5,18 @@ import type {
   GameState,
   GameAction,
   ManaCard,
+  MonsterCard,
   ActionLog,
   LogType,
   GameStatus,
   ZoneType,
   PlayerSide,
   PlayerState,
+  PendingDraws,
 } from '../types';
+import { getEffectiveKanji } from '../utils/manaKanji';
 import {
+  getWildcardKanji,
   getPassiveList,
   resolveSide,
   getOpponentSide,
@@ -130,7 +134,7 @@ const evaluateGraveyardThresholdWinConditions = (
       for (const passive of getPassiveList(monster)) {
         if (passive.trigger !== 'graveyard_kanji_threshold_win') continue;
         const count = state[side].cemetery.filter(
-          (c) => c.kanji === passive.targetKanji,
+          (c) => getEffectiveKanji(c) === passive.targetKanji,
         ).length;
         if (count > passive.threshold) {
           return {
@@ -351,6 +355,151 @@ const initialState: GameState = {
   pendingExtraTurn: false,
 };
 
+// 【今回追加・花】side側に、表向きで取り除かれていない花(mana_kanji_wildcard)が残っているか
+// (泊の無効化は考慮しない。花が裏向きになる/取り除かれる際の後始末の判定に使う)。
+const hasFaceUpWildcard = (state: GameState, side: PlayerSide): boolean =>
+  state[side].monsters.some(
+    (m) =>
+      !m.isFlipped &&
+      !m.isRemovedFromGame &&
+      getPassiveList(m).some((p) => p.trigger === 'mana_kanji_wildcard'),
+  );
+
+// 【今回追加・花】花が裏向きになった(または取り除かれた)ときの後始末。公式QA: 他の色の代わりに
+// つけていた屮は墓地へ行く。あわせて、墓地・山札・保留領域・保持ゾーンに残っている色指定も
+// クリアする(花が表向きの間だけ有効な指定のため)。他に表向きの花が残っていれば何もしない。
+const applyWildcardLoss = (state: GameState, side: PlayerSide): GameState => {
+  if (hasFaceUpWildcard(state, side)) return state;
+  const player = state[side];
+  const clear = (c: ManaCard): ManaCard =>
+    c.designatedKanji === undefined ? c : { ...c, designatedKanji: undefined };
+  const sentToGraveyard: ManaCard[] = [];
+  const monsters = player.monsters.map((monster) => ({
+    ...monster,
+    equippedMana: monster.equippedMana.map((m) => {
+      if (m && m.designatedKanji !== undefined) {
+        sentToGraveyard.push(clear(m));
+        return null;
+      }
+      return m;
+    }),
+    reservedCards: monster.reservedCards?.map(clear),
+  }));
+  const changed =
+    sentToGraveyard.length > 0 ||
+    [...player.deck, ...player.cemetery, ...player.pendingDrawCards].some(
+      (c) => c.designatedKanji !== undefined,
+    );
+  if (!changed) return state;
+  return {
+    ...state,
+    [side]: {
+      ...player,
+      monsters,
+      deck: player.deck.map(clear),
+      cemetery: [...player.cemetery.map(clear), ...sentToGraveyard],
+      pendingDrawCards: player.pendingDrawCards.map(clear),
+    },
+    logs:
+      sentToGraveyard.length > 0
+        ? [
+            createLog(
+              'system',
+              `${getSideLabel(side)}の花の効果が切れたため、他の色としてつけていた屮${sentToGraveyard.length}枚が墓地へ行きました。`,
+            ),
+            ...state.logs,
+          ]
+        : state.logs,
+  };
+};
+
+// 【今回追加・保】公式QA: 保が表向きで山札のマナを置いている状態で、反などで裏向きにされたら、
+// 置いていた山札は「もとの位置」(山札の一番上。保は上からの部分を置くため)に戻る。
+// 保(deck_partial_to_reserve)のreservedCardsのみが対象(囲のバッファは対象外)。
+const returnReservedToDeckTop = (
+  state: GameState,
+  side: PlayerSide,
+  monsterIndex: number,
+): GameState => {
+  const monster = state[side].monsters[monsterIndex];
+  const reserved = monster?.reservedCards ?? [];
+  if (
+    !monster ||
+    reserved.length === 0 ||
+    monster.effect?.effectId !== 'deck_partial_to_reserve'
+  ) {
+    return state;
+  }
+  return {
+    ...state,
+    [side]: {
+      ...state[side],
+      deck: [...reserved, ...state[side].deck],
+      monsters: state[side].monsters.map((m, i) =>
+        i === monsterIndex ? { ...m, reservedCards: [] } : m,
+      ),
+    },
+    logs: [
+      createLog(
+        'system',
+        `${getSideLabel(side)}の保が裏向きになったため、置いていた山札${reserved.length}枚が山札の元の位置(一番上)へ戻りました。`,
+      ),
+      ...state.logs,
+    ],
+  };
+};
+
+// 【今回追加】モンスターのequippedManaを「slotsの長さまでnullで埋めた配列」に正規化する。
+// useDeckBuilder.generateGameCards()はequippedMana: []でモンスターを生成するため、
+// 一度もマナを装備していないモンスターではEQUIP_SPECIFIC_MANAの「同じ漢字の空きスロットを
+// 優先する」判定(=== null)が常に不成立となり、マナがスロットの漢字と食い違う位置に
+// 入っていた。不変条件「equippedMana.length >= slots.length、空きは常にnull」を
+// SET_INITIAL_STATE(開始・再戦・デッキ構築後のすべてが通る唯一の入口)で保証する。
+// 既に装備済みのマナ・超過スロット分(slotsより長い部分)は保持する。
+const normalizeEquippedMana = (monster: MonsterCard): MonsterCard => {
+  const current = monster.equippedMana;
+  const normalized: (ManaCard | null)[] = Array.from(
+    { length: Math.max(monster.slots.length, current.length) },
+    (_, i) => current[i] ?? null,
+  );
+  return { ...monster, equippedMana: normalized };
+};
+
+// 【今回追加・命/走/仁/花】ドロー系Action(AUTO_DRAW/DRAW_REPLACE_FROM_GRAVEYARD)の後処理。
+// ドローが成立した場合のみ呼ばれ、ターン開始ドローの済みフラグと残りドロー回数を更新する。
+const applyDrawBookkeeping = (
+  state: GameState,
+  side: PlayerSide,
+  payload: {
+    isTurnStartDraw?: boolean;
+    remainingDrawsAfter?: PendingDraws | null;
+  },
+): GameState => {
+  let next = state;
+  if (payload.isTurnStartDraw && side === state.turnPlayer) {
+    next = { ...next, hasDrawnThisTurn: true };
+  }
+  if (payload.remainingDrawsAfter !== undefined) {
+    next = {
+      ...next,
+      [side]: {
+        ...next[side],
+        remainingDraws: payload.remainingDrawsAfter ?? undefined,
+      },
+    };
+  }
+  return next;
+};
+
+// 【今回追加】ターンが切り替わる(または追加ターンが始まる)際に、ターン開始ドローの済みフラグと
+// 両者の残りドロー回数をリセットする。
+const resetTurnDrawState = (state: GameState): GameState => ({
+  ...state,
+  hasDrawnThisTurn: false,
+  player: { ...state.player, remainingDraws: undefined },
+  opponent: { ...state.opponent, remainingDraws: undefined },
+});
+
 // 配列を不変にシャッフルするヘルパー関数 (Fisher-Yates)
 const shuffleArray = <T>(array: T[]): T[] => {
   const result = [...array];
@@ -422,7 +571,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           ...state.logs,
         ];
         return {
-          ...stateAfterReserve,
+          ...resetTurnDrawState(stateAfterReserve),
           currentPhase: 'start',
           pendingExtraTurn: false,
           logs: extraTurnLogs,
@@ -449,12 +598,13 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       // 【今回追加・泊】turnPlayer(今終わったターン)の相手=nextTurnPlayerが持つ泊の
       // カウントを消費する。「泊の所有者から見た相手のターン」が1つ終わったことになるため。
-      const stateAfterDisableCounter = {
+      // 【今回追加・命/走】ターン開始ドローの済みフラグと残りドロー回数もここでリセットする。
+      const stateAfterDisableCounter = resetTurnDrawState({
         ...stateAfterReserve,
         [nextTurnPlayer]: consumeDisableOpponentEffectsCounters(
           stateAfterReserve[nextTurnPlayer],
         ),
-      };
+      });
 
       // 【変更・浅/政の勝敗接続】従来は政のみログ出力に留めていたが、evaluateTurnStartCardWinConditions
       // (浅・政を統合)へ差し替え、実際にgameStatusを更新するよう格上げした。
@@ -548,10 +698,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       ];
 
       // 【追加・激】相手が表向きの激で予想を宣言していれば、引いた漢字と照合する。
-      return applyPredictedDrawCheck(
-        { ...nextState, logs: newLogs },
+      return applyDrawBookkeeping(
+        applyPredictedDrawCheck(
+          { ...nextState, logs: newLogs },
+          targetSide,
+          drawnCardWithoutTrap.kanji,
+        ),
         targetSide,
-        drawnCardWithoutTrap.kanji,
+        action.payload,
       );
     }
 
@@ -586,10 +740,14 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       ];
 
       // 【追加・激】「墓地からひく場合も含む」(includeGraveyardDraw)対応。
-      return applyPredictedDrawCheck(
-        { ...nextState, logs: newLogs },
+      return applyDrawBookkeeping(
+        applyPredictedDrawCheck(
+          { ...nextState, logs: newLogs },
+          side,
+          card.kanji,
+        ),
         side,
-        card.kanji,
+        action.payload,
       );
     }
 
@@ -702,6 +860,11 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         );
       }
 
+      // 【今回追加】破棄対象が0枚なら何もしない。equippedManaがnull埋めで正規化された
+      // 結果、従来の`length === 0`ガードでは空のモンスターへの破棄を防げなくなったため。
+      // (0枚破棄のログとUndo履歴が無駄に積まれるのを防ぐ)
+      if (trashedCards.length === 0) return state;
+
       const updatedMonsters = [...player.monsters];
       updatedMonsters[monsterIndex] = {
         ...monster,
@@ -812,7 +975,17 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const hasDisablePassive = getPassiveList(targetMonster).some(
         (p) => p.trigger === 'disable_opponent_monster_effects',
       );
-      const disabledOpponentTurnsRemaining = nextIsFlipped
+      // 【今回追加・泊同士】相手の泊が既に有効(表向きで無効化カウント中)のとき、後から発動した
+      // 泊は効果を無効にできず、すぐ裏向きに戻る(公式QA)。この場合、表向きにはならず
+      // (isFlipped:trueのまま)、無効化カウントもセットしない。
+      const bouncedByOpponentBan =
+        !nextIsFlipped &&
+        hasDisablePassive &&
+        state[getOpponentSide(side)].monsters.some(
+          (m) => !m.isFlipped && (m.disabledOpponentTurnsRemaining ?? 0) > 0,
+        );
+      const effectiveIsFlipped = nextIsFlipped || bouncedByOpponentBan;
+      const disabledOpponentTurnsRemaining = effectiveIsFlipped
         ? undefined
         : hasDisablePassive
           ? 3
@@ -821,19 +994,89 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const updatedMonsters = [...player.monsters];
       updatedMonsters[monsterIndex] = {
         ...targetMonster,
-        isFlipped: nextIsFlipped,
+        isFlipped: effectiveIsFlipped,
         disabledOpponentTurnsRemaining,
+        // 【今回追加・囲/政】裏向きに戻った時点で前準備発動済みマークをクリアする
+        // (囲のバッファ切れによる自動裏向き化・反による裏向き化・手動反転のいずれでも、
+        // 再び表向きにすれば前準備を再発動できる)。表向きにする側では現状維持。
+        preparationUsed: effectiveIsFlipped
+          ? undefined
+          : targetMonster.preparationUsed,
       };
 
-      const logMsg = `${getSideLabel(side)}の「${updatedMonsters[monsterIndex].name || `モンスター${monsterIndex + 1}`}」を${nextIsFlipped ? '裏面(スロット面)' : '表面(イラスト面)'}に表示切替しました。`;
+      const monsterLabel =
+        updatedMonsters[monsterIndex].name || `モンスター${monsterIndex + 1}`;
+      const logMsg = bouncedByOpponentBan
+        ? `${getSideLabel(side)}の「${monsterLabel}」は相手の泊が有効なため、効果を無効にできず、すぐに裏面(スロット面)へ戻りました。`
+        : `${getSideLabel(side)}の「${monsterLabel}」を${nextIsFlipped ? '裏面(スロット面)' : '表面(イラスト面)'}に表示切替しました。`;
 
-      return {
+      const flipped: GameState = {
         ...state,
         [side]: {
           ...player,
           monsters: updatedMonsters,
         },
         logs: [createLog('system', logMsg), ...state.logs],
+      };
+      // 【今回追加・花】表向きの花が裏向きになったら、他の色の代わりにつけていた屮は墓地へ
+      const lostWildcard =
+        effectiveIsFlipped &&
+        !targetMonster.isFlipped &&
+        getPassiveList(targetMonster).some(
+          (p) => p.trigger === 'mana_kanji_wildcard',
+        );
+      const afterWildcard = lostWildcard
+        ? applyWildcardLoss(flipped, side)
+        : flipped;
+      // 【今回追加・保】表向きから裏向きになるとき、置いていた山札を元の位置へ戻す
+      return effectiveIsFlipped && !targetMonster.isFlipped
+        ? returnReservedToDeckTop(afterWildcard, side, monsterIndex)
+        : afterWildcard;
+    }
+
+    // 【今回追加・花】屮の色指定の設定・解除(花が表向きで泊に無効化されていない側のみ)。
+    case 'SET_MANA_DESIGNATION': {
+      const { side, cardId, kanji } = action.payload;
+      const wildcardKanji = getWildcardKanji(state, side);
+      if (wildcardKanji === null) return state;
+      let found = false;
+      const apply = (c: ManaCard): ManaCard => {
+        if (c.id !== cardId || c.kanji !== wildcardKanji) return c;
+        found = true;
+        return {
+          ...c,
+          designatedKanji: kanji && kanji !== c.kanji ? kanji : undefined,
+        };
+      };
+      const player = state[side];
+      const next = {
+        ...player,
+        deck: player.deck.map(apply),
+        cemetery: player.cemetery.map(apply),
+        pendingDrawCards: player.pendingDrawCards.map(apply),
+        monsters: player.monsters.map((m) => ({
+          ...m,
+          equippedMana: m.equippedMana.map((c) => (c ? apply(c) : c)),
+          reservedCards: m.reservedCards?.map(apply),
+        })),
+      };
+      if (!found) return state;
+      return { ...state, [side]: next };
+    }
+
+    // 【今回追加・囲/政】前準備発動済みマークを立てる。表裏(isFlipped)は変更しない。
+    case 'MARK_PREPARATION_USED': {
+      const { side, monsterIndex } = action.payload;
+      const player = state[side];
+      const target = player.monsters[monsterIndex];
+      if (!target) return state;
+
+      const updatedMonsters = [...player.monsters];
+      updatedMonsters[monsterIndex] = { ...target, preparationUsed: true };
+
+      return {
+        ...state,
+        [side]: { ...player, monsters: updatedMonsters },
       };
     }
 
@@ -874,6 +1117,26 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const updatedSourceArray = sourceArray.filter((c) => c.id !== manaCardId);
 
+      // 【今回追加・花】花が表向き(泊で無効化されていない)のとき、万能マナ(屮)は、つけた
+      // スロットの漢字として自動で色が指定される(スロットが屮なら指定なし)。
+      const wildcardKanji = getWildcardKanji(state, side);
+      const isWildcardCard =
+        wildcardKanji !== null && cardToEquip.kanji === wildcardKanji;
+      const placeAt = (
+        monster: (typeof player.monsters)[number],
+        slotIndex: number,
+      ): ManaCard => {
+        if (!isWildcardCard) return cardToEquip;
+        const slotKanji = monster.slots[slotIndex];
+        return {
+          ...cardToEquip,
+          designatedKanji:
+            slotKanji && slotKanji !== cardToEquip.kanji
+              ? slotKanji
+              : undefined,
+        };
+      };
+
       const updatedMonsters = player.monsters.map((monster, index) => {
         if (index !== monsterIndex) return monster;
 
@@ -883,20 +1146,25 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
           while (newEquippedMana.length <= targetSlotIndex) {
             newEquippedMana.push(null);
           }
-          newEquippedMana[targetSlotIndex] = cardToEquip;
+          newEquippedMana[targetSlotIndex] = placeAt(monster, targetSlotIndex);
         } else {
+          // 同じ(実効的な)漢字の空きスロットを優先。無ければ万能マナは屮スロット、
+          // それも無ければ最初の空きスロットへ(従来のフォールバックと同じ)。
+          const effectiveKanji = getEffectiveKanji(cardToEquip);
           const matchingEmptyIndex = monster.slots.findIndex(
             (requiredKanji, i) =>
-              requiredKanji === cardToEquip.kanji &&
-              newEquippedMana[i] === null,
+              requiredKanji === effectiveKanji && newEquippedMana[i] === null,
           );
 
           if (matchingEmptyIndex !== -1) {
-            newEquippedMana[matchingEmptyIndex] = cardToEquip;
+            newEquippedMana[matchingEmptyIndex] = placeAt(
+              monster,
+              matchingEmptyIndex,
+            );
           } else {
             const emptyIndex = newEquippedMana.findIndex((m) => m === null);
             if (emptyIndex !== -1) {
-              newEquippedMana[emptyIndex] = cardToEquip;
+              newEquippedMana[emptyIndex] = placeAt(monster, emptyIndex);
             } else {
               newEquippedMana.push(cardToEquip);
             }
@@ -1205,18 +1473,30 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
       const initialLogs = [createLog('system', '対戦を開始しました。')];
       if (alertLog) initialLogs.unshift(alertLog);
 
+      // 【今回改訂】再戦(handleRestartGame)でも同じActionを使うため、前の試合の墓地・除外・
+      // 保留領域・ターン進行・ターン開始ドローの済みフラグ等が残らないよう初期値へ戻す
+      // (従来は...state.playerのスプレッドで墓地などが引き継がれていた)。
       return {
         ...state,
         player: {
-          ...state.player,
-          monsters: action.payload.player.monsters,
           deck: action.payload.player.deck,
+          cemetery: [],
+          exile: [],
+          pendingDrawCards: [],
+          monsters: action.payload.player.monsters.map(normalizeEquippedMana),
         },
         opponent: {
-          ...state.opponent,
-          monsters: action.payload.opponent.monsters,
           deck: action.payload.opponent.deck,
+          cemetery: [],
+          exile: [],
+          pendingDrawCards: [],
+          monsters: action.payload.opponent.monsters.map(normalizeEquippedMana),
         },
+        turnPlayer: 'player',
+        turnCount: 1,
+        currentPhase: 'start',
+        pendingExtraTurn: false,
+        hasDrawnThisTurn: false,
         logs: initialLogs,
         gameStatus: status,
       };
@@ -1309,7 +1589,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const logMsg = `${getSideLabel(side)}の「${target.name || `モンスター${monsterIndex + 1}`}」がゲームから取り除かれました。`;
 
-      return {
+      const removed: GameState = {
         ...state,
         [side]: {
           ...player,
@@ -1317,6 +1597,11 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         },
         logs: [createLog('system', logMsg), ...state.logs],
       };
+      // 【今回追加・花】取り除かれた花も、裏向きになったときと同じ後始末を行う
+      return applyWildcardLoss(
+        returnReservedToDeckTop(removed, side, monsterIndex),
+        side,
+      );
     }
 
     case 'CONSUME_RESERVED_CARD': {
@@ -1355,7 +1640,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     case 'FORCE_END_OPPONENT_TURN': {
       const { side } = action.payload;
       return {
-        ...state,
+        ...resetTurnDrawState(state),
         turnPlayer: side,
         turnCount: state.turnCount + 1,
         currentPhase: 'start',

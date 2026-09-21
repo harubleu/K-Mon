@@ -6,6 +6,8 @@ interface ActionAreaProps {
   turnCount: number;
   onSwitchTurn: () => void;
   onDraw: (side: PlayerSide) => void;
+  // 【今回追加・命/走】ターンプレイヤーの残りドロー回数(あれば、ドローボタンに表示する)
+  remainingDraws?: number;
   onJanken?: () => void;
   onDeckMill?: (side: PlayerSide, count: number, destination: ZoneType) => void;
 }
@@ -15,6 +17,7 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
   turnCount,
   onSwitchTurn,
   onDraw,
+  remainingDraws,
   onJanken,
   onDeckMill,
 }) => {
@@ -87,6 +90,7 @@ export const ActionArea: React.FC<ActionAreaProps> = ({
           }}
         >
           🎴 山札1枚ドロー ({turnPlayer === 'player' ? '自分' : '相手'})
+          {remainingDraws ? ` ／残りドロー${remainingDraws}枚` : ''}
         </button>
 
         {/* じゃんけん呼び出しボタン */}

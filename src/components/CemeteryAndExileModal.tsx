@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import type { ManaCard, MonsterCard, PlayerSide, ZoneType } from '../types';
 import { Card } from './Card';
+import { matchesKanjiFilter } from '../utils/manaKanji';
 import { MonsterSummary } from './MonsterSummary';
 import { DraggableMana } from './GameBoard/DraggableMana';
 import { DroppableSlot } from './PlayerZone/DroppableSlot';
@@ -192,7 +193,7 @@ export const CemeteryAndExileModal: React.FC<CemeteryAndExileModalProps> = ({
               const isSelected = selectedIds.includes(card.id);
               const passesKanjiFilter =
                 !effectSelection?.kanjiFilter ||
-                effectSelection.kanjiFilter.includes(card.kanji);
+                matchesKanjiFilter(card, effectSelection.kanjiFilter);
               const passesCardIdFilter =
                 !effectSelection?.cardIdFilter ||
                 effectSelection.cardIdFilter.includes(card.id);
