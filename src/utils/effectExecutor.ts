@@ -29,7 +29,9 @@ export function getOpponentSide(side: PlayerSide): PlayerSide {
 
 // 【追加・本/敗/墓/深】ログメッセージ用の簡易ラベル。useGameState.tsのgetSideLabelと同じ
 // 対応関係だが、utils層からhooks層への逆依存を避けるためこのファイル内で完結させる。
-function sideLabel(side: PlayerSide): string {
+// 【今回追加・星/流/養の専用ログ】drawFlow.ts・graveyardReactions.tsからも
+// 同じ日本語ラベルを使ってlogNoteを組み立てられるようexport化した。
+export function sideLabel(side: PlayerSide): string {
   return side === 'player' ? '自分' : '相手';
 }
 
@@ -177,6 +179,15 @@ interface DeckReduceIntent {
   targetSide: PlayerSide;
   amount: number;
   destination: 'cemetery' | 'exile';
+  // 【今回追加・星/流/養の専用ログ】DAMAGE/MOVE_CARD_BETWEEN_ZONESのlogNoteをそのまま
+  // 引き継ぐ。パイプライン内で転嫁・注により中身が書き換わっても、発生源(星/流/養)の
+  // 注記は保持したいため、intentの一部として運ぶ。
+  logNote?: string;
+  // 【今回追加・化の戻す位置UI】特定条件に合うカードを優先的に選びたい効果向けの
+  // 候補IDリスト(指定順)。転嫁でtargetSideが変わった場合は意味を失うため、
+  // originalTargetSideと現在のtargetSideが一致する場合のみbuildDeckReduceActionで採用する。
+  preferredCardIds?: string[];
+  originalTargetSide?: PlayerSide;
 }
 
 // passiveEffectは単体/配列どちらもあり得るため配列に正規化する
@@ -402,6 +413,7 @@ function extractDeckReduceIntent(action: GameAction): DeckReduceIntent | null {
       targetSide,
       amount: action.payload.amount,
       destination: 'cemetery',
+      logNote: action.payload.logNote,
     };
   }
   if (
@@ -415,6 +427,9 @@ function extractDeckReduceIntent(action: GameAction): DeckReduceIntent | null {
       targetSide: action.payload.targetSide,
       amount: action.payload.cardIds.length,
       destination: action.payload.targetZone,
+      logNote: action.payload.logNote,
+      preferredCardIds: action.payload.preferredCardIds,
+      originalTargetSide: action.payload.targetSide,
     };
   }
   return null;
@@ -422,12 +437,41 @@ function extractDeckReduceIntent(action: GameAction): DeckReduceIntent | null {
 
 // 書き換え後のDeckReduceIntentから、MOVE_CARD_BETWEEN_ZONES Actionを再構築する。
 // amountが0以下、または対象の山札が既に0枚ならAction自体を発生させない(null)。
+// 【今回追加】intent.logNoteをそのまま引き継ぐ(星/流/養の専用ログ用)。
+// 【今回追加・化の戻す位置UI】intent.preferredCardIdsが指定されており、かつtargetSideが
+// 転嫁等で変化していない(originalTargetSide===targetSide)場合、単純な「上からN枚」
+// (takeTopDeckIds)ではなく、指定されたID群を優先的に(現在の山札に実在するものだけ、
+// 指定順に)採用する。amountがpreferredの件数を上回る場合(boost等で増えた場合)は、
+// 既に選ばれたIDを除いた上で通常どおり上から不足分を補う。
 function buildDeckReduceAction(
   gameState: GameState,
   intent: DeckReduceIntent,
 ): GameAction | null {
   if (intent.amount <= 0) return null;
-  const cardIds = takeTopDeckIds(gameState, intent.targetSide, intent.amount);
+  const deck = getPlayerState(gameState, intent.targetSide).deck;
+
+  let cardIds: string[];
+  if (
+    intent.preferredCardIds &&
+    intent.preferredCardIds.length > 0 &&
+    intent.originalTargetSide === intent.targetSide
+  ) {
+    const deckIds = new Set(deck.map((c) => c.id));
+    const preferred = intent.preferredCardIds.filter((id) => deckIds.has(id));
+    const selected = preferred.slice(0, intent.amount);
+    if (selected.length < intent.amount) {
+      const selectedSet = new Set(selected);
+      const remaining = deck
+        .filter((c) => !selectedSet.has(c.id))
+        .slice(0, intent.amount - selected.length)
+        .map((c) => c.id);
+      selected.push(...remaining);
+    }
+    cardIds = selected;
+  } else {
+    cardIds = takeTopDeckIds(gameState, intent.targetSide, intent.amount);
+  }
+
   if (cardIds.length === 0) return null;
   return {
     type: 'MOVE_CARD_BETWEEN_ZONES',
@@ -437,12 +481,33 @@ function buildDeckReduceAction(
       cardIds,
       sourceZone: 'deck',
       targetZone: intent.destination,
+      logNote: intent.logNote,
     },
   };
 }
 
-// 効果解決で組み立てられたActions配列を、dispatch直前にこの関数へ通すことで
-// mitigate/boost/block/redirectの4トリガーを適用する。山札減少を表さないActionはそのまま通す。
+// 【今回改訂・重大】囲(shield_counter_deck_protection)を山札減少パイプラインへ追加し、
+// 処理順序を「①boost→②抑(強制・相手の効果限定)→③囲(相手の効果限定・1枚消費で全量ブロック)
+// →④転嫁(敵・返・圧・扱)→⑤浮(実際に減る側の軽減)→⑥注」に確定した(design書7.3章5番の
+// 暫定案「抑＞囲＞リダイレクト系＞浮」をそのまま実装)。従来は抑・浮が転嫁の後(かつ抑は浮の後)に
+// 判定されており、原文の優先順位と逆順だった。あわせて、抑・囲とも原文「あいてのモンスターの
+// 効果で」に従い、転嫁前の元の対象(targetSide)が自分自身の効果で山札を減らす場合
+// (targetSide===actingSide、負・吐・極・或等の自山札減少)には発動しないガードを追加した
+// (従来の抑は自分の効果による自山札減少も誤ってブロックしていた)。
+//
+// 【今回改訂】抑・囲は転嫁の「前」の元の対象に対して一度だけ判定し、転嫁ループの各ホップでは
+// 再判定しない(抑・囲はいずれも「次の1回」を丸ごと防ぐ効果のため、転嫁が発生する余地自体を
+// 消してしまう設計。転嫁の応酬に割り込む囲・抑の存在は原文・FAQに記載が無いため、今回はこの
+// 単純化した設計で確定した)。
+//
+// 【今回改訂・転嫁の応酬とactingSideの扱い】「転嫁したモンスターの持ち主を、その後の発動者と
+// みなす」(ユーザー確認済み)。転嫁が発生するたびにcurrentActingSideを転嫁元の持ち主(redirectOwner)
+// へ更新し、次のホップのfindApplicableRedirect(扱のownEffectOnly判定)に渡す。
+//
+// 【今回改訂・装備マナ側の囲を撤去】従来applyManaTrashPassives(TRASH_MANA専用)にも囲の判定が
+// 入っていたが、原文「じぶんの山札がへるとき」は山札減少のみを対象としており、装備マナの破棄を
+// 守る記載が無い(装備マナを守るのは吸の役目)。二重実装だったため、山札減少側(本関数)に一本化し、
+// applyManaTrashPassives側からは撤去した。
 export function applyDeckReducePassives(
   actions: GameAction[],
   actingSide: PlayerSide,
@@ -460,55 +525,16 @@ export function applyDeckReducePassives(
 
     let targetSide = intent.targetSide;
     let amount = intent.amount + sumBoostAmount(gameState, actingSide);
+    let currentActingSide = actingSide;
+    let blockedOrShielded = false;
 
-    // 【今回改訂】転嫁(敵・返・圧・扱)。山札が減る側(targetSide)が持つ転嫁を、転嫁先の側が
-    // 持つ転嫁で更に転嫁し返す応酬まで扱う(上限あり)。敵と敵など、消費されない転嫁どうしが
-    // 永遠に発動し合う場合は、ダメージ自体を無効にする(公式QA)。
-    const usedRedirects = new Set<string>();
-    for (let hop = 0; hop < 8; hop++) {
-      const redirect = findApplicableRedirect(
-        gameState,
-        targetSide,
-        actingSide,
-        amount,
-        usedRedirects,
-      );
-      if (!redirect) break;
-      if (redirect.loop) {
-        amount = 0;
-        break;
-      }
-      const redirectOwner = targetSide;
-      usedRedirects.add(
-        `${redirectOwner}:${redirect.monsterIndex}:${redirect.passiveIndex}`,
-      );
-      amount = redirect.fixedCount ?? amount;
-      targetSide = getOpponentSide(redirectOwner);
-      if (redirect.consumeAfterUse) {
-        consumptions.push({
-          type: 'CONSUME_PASSIVE_EFFECT',
-          payload: {
-            side: redirectOwner,
-            monsterIndex: redirect.monsterIndex,
-            passiveIndex: redirect.passiveIndex,
-          },
-        });
-        // 【追加】扱・返・圧の原文「このカードをうらむきにもどす」対応。
-        // これらは表向き固定(isFlipped:false)の永続カードのため、1回消費時に
-        // FLIP_MONSTER(トグル)を1回発火させれば裏面(isFlipped:true)に切り替わる。
-        consumptions.push({
-          type: 'FLIP_MONSTER',
-          payload: { side: redirectOwner, monsterIndex: redirect.monsterIndex },
-        });
-      }
-    }
-
-    amount = Math.max(0, amount - sumMitigateAmount(gameState, targetSide));
-
-    if (amount > 0) {
+    // ①抑(block_next_deck_reduce_effect): 「あいてのモンスターの効果で」に従い、
+    // 転嫁前の元の対象が自分自身の効果で山札を減らす場合は対象外。強制発動・次の1回を防ぐ。
+    if (targetSide !== currentActingSide) {
       const block = findApplicableBlock(gameState, targetSide);
       if (block) {
         amount = 0;
+        blockedOrShielded = true;
         consumptions.push({
           type: 'CONSUME_PASSIVE_EFFECT',
           payload: {
@@ -517,8 +543,7 @@ export function applyDeckReducePassives(
             passiveIndex: block.passiveIndex,
           },
         });
-        // 【追加】抑の原文「このカードを、うらむきにもどす」対応。redirectと同じくFLIP_MONSTER
-        // (トグル)を1回発火させる。
+        // 抑の原文「このカードを、うらむきにもどす」対応。
         consumptions.push({
           type: 'FLIP_MONSTER',
           payload: { side: targetSide, monsterIndex: block.monsterIndex },
@@ -526,14 +551,96 @@ export function applyDeckReducePassives(
       }
     }
 
+    // ②囲(shield_counter_deck_protection): 抑と同じく「あいてのカードの効果で」限定。
+    // 抑が既に発動していれば判定しない(抑で丸ごと防がれた減少に、囲のバッファを消費する
+    // 必要は無いため)。
+    if (!blockedOrShielded && targetSide !== currentActingSide) {
+      const shield = findApplicableShield(gameState, targetSide);
+      if (shield) {
+        amount = 0;
+        blockedOrShielded = true;
+        const shieldMonster = getPlayerState(gameState, targetSide).monsters[
+          shield.monsterIndex
+        ];
+        const remainingBuffer = (shieldMonster.reservedCards ?? []).filter(
+          (c) => c.id !== shield.bufferCardId,
+        );
+        consumptions.push({
+          type: 'CONSUME_RESERVED_CARD',
+          payload: {
+            side: targetSide,
+            monsterIndex: shield.monsterIndex,
+            cardId: shield.bufferCardId,
+          },
+        });
+        if (remainingBuffer.length === 0) {
+          consumptions.push({
+            type: 'FLIP_MONSTER',
+            payload: { side: targetSide, monsterIndex: shield.monsterIndex },
+          });
+        }
+      }
+    }
+
+    // ③転嫁(敵・返・圧・扱)。抑・囲で防がれていた場合はスキップする(転嫁の余地自体が無い)。
+    // 山札が減る側(targetSide)が持つ転嫁を、転嫁先の側が持つ転嫁で更に転嫁し返す応酬まで
+    // 扱う(上限あり)。敵と敵など、消費されない転嫁どうしが永遠に発動し合う場合は、
+    // ダメージ自体を無効にする(公式QA)。
+    if (!blockedOrShielded) {
+      const usedRedirects = new Set<string>();
+      for (let hop = 0; hop < 8; hop++) {
+        const redirect = findApplicableRedirect(
+          gameState,
+          targetSide,
+          currentActingSide,
+          amount,
+          usedRedirects,
+        );
+        if (!redirect) break;
+        if (redirect.loop) {
+          amount = 0;
+          break;
+        }
+        const redirectOwner = targetSide;
+        usedRedirects.add(
+          `${redirectOwner}:${redirect.monsterIndex}:${redirect.passiveIndex}`,
+        );
+        amount = redirect.fixedCount ?? amount;
+        targetSide = getOpponentSide(redirectOwner);
+        // 【今回追加】転嫁したモンスターの持ち主を、その後の発動者とみなす。
+        currentActingSide = redirectOwner;
+        if (redirect.consumeAfterUse) {
+          consumptions.push({
+            type: 'CONSUME_PASSIVE_EFFECT',
+            payload: {
+              side: redirectOwner,
+              monsterIndex: redirect.monsterIndex,
+              passiveIndex: redirect.passiveIndex,
+            },
+          });
+          // 扱・返・圧の原文「このカードをうらむきにもどす」対応。
+          consumptions.push({
+            type: 'FLIP_MONSTER',
+            payload: {
+              side: redirectOwner,
+              monsterIndex: redirect.monsterIndex,
+            },
+          });
+        }
+      }
+    }
+
+    // ④浮(mitigate_deck_reduce_effect): 最終的な対象側の軽減。
+    amount = Math.max(0, amount - sumMitigateAmount(gameState, targetSide));
+
     // 【追加・注】ここまでの結果、相手側の山札が実際に減る状態が残っている場合のみ判定する。
-    // 浮のmitigateや抑のblockで既に0になっていれば、この時点でamount<=0のため発動しない
+    // 浮のmitigateや抑・囲で既に0になっていれば、この時点でamount<=0のため発動しない
     // (FAQ「浮を先に発動させた場合、注は発動できない」を自然に再現)。
     if (amount > 0 && targetSide === getOpponentSide(actingSide)) {
       const replace = findApplicableReplace(gameState, actingSide);
       if (replace) {
-        // 【今回改訂】注のselfCost(自分-1)は、自分側が浮等のmitigateを持っていても
-        // 軽減対象にしない(原文に記載が無いため固定値のまま、design書6章の既存方針を踏襲)。
+        // 注のselfCost(自分-1)は、自分側が浮等のmitigateを持っていても軽減対象にしない
+        // (原文に記載が無いため固定値のまま、design書6章の既存方針を踏襲)。
         const selfAction = buildDeckReduceAction(gameState, {
           targetSide: actingSide,
           amount: replace.selfCost,
@@ -541,35 +648,64 @@ export function applyDeckReducePassives(
         });
         if (selfAction) result.push(selfAction);
 
-        // 【今回改訂・重大】注の発動によって生じる相手側への減少(opponentCount)も、
-        // 「山札を減らす効果」の一種として扱い、改めて相手側のmitigate/blockを適用する
-        // (ユーザー確認済み)。直前(430行目以前)のsumMitigateAmount/findApplicableBlockは
-        // 「注が発動する前の、置換前の山札減少」に対する判定であり、注が生み出す
-        // 「新しい山札減少(opponentCount)」にはまだ一切適用されていないため、
-        // ここで改めて適用しても二重軽減・二重消費にはならない。
+        // 注の発動によって生じる相手側への減少(opponentCount)も、「山札を減らす効果」の
+        // 一種として扱い、改めて相手側のmitigate/block/shieldを適用する(ユーザー確認済み)。
+        // 直前のsumMitigateAmount/findApplicableBlockは「注が発動する前の、置換前の
+        // 山札減少」に対する判定であり、注が生み出す「新しい山札減少(opponentCount)」には
+        // まだ一切適用されていないため、ここで改めて適用しても二重軽減・二重消費にはならない。
         amount = Math.max(
           0,
           replace.opponentCount - sumMitigateAmount(gameState, targetSide),
         );
         if (amount > 0) {
-          const block = findApplicableBlock(gameState, targetSide);
-          if (block) {
+          const block2 = findApplicableBlock(gameState, targetSide);
+          if (block2) {
             amount = 0;
             consumptions.push({
               type: 'CONSUME_PASSIVE_EFFECT',
               payload: {
                 side: targetSide,
-                monsterIndex: block.monsterIndex,
-                passiveIndex: block.passiveIndex,
+                monsterIndex: block2.monsterIndex,
+                passiveIndex: block2.passiveIndex,
               },
             });
             consumptions.push({
               type: 'FLIP_MONSTER',
               payload: {
                 side: targetSide,
-                monsterIndex: block.monsterIndex,
+                monsterIndex: block2.monsterIndex,
               },
             });
+          } else {
+            // 【今回追加】注の二次減少(opponentCount)にも囲の一貫性を保つため、
+            // 抑と同様に囲の判定を追加した(注の対象は常にtargetSide!==actingSideのため
+            // 相手限定チェックは不要)。
+            const shield2 = findApplicableShield(gameState, targetSide);
+            if (shield2) {
+              amount = 0;
+              const shieldMonster2 = getPlayerState(gameState, targetSide)
+                .monsters[shield2.monsterIndex];
+              const remainingBuffer2 = (
+                shieldMonster2.reservedCards ?? []
+              ).filter((c) => c.id !== shield2.bufferCardId);
+              consumptions.push({
+                type: 'CONSUME_RESERVED_CARD',
+                payload: {
+                  side: targetSide,
+                  monsterIndex: shield2.monsterIndex,
+                  cardId: shield2.bufferCardId,
+                },
+              });
+              if (remainingBuffer2.length === 0) {
+                consumptions.push({
+                  type: 'FLIP_MONSTER',
+                  payload: {
+                    side: targetSide,
+                    monsterIndex: shield2.monsterIndex,
+                  },
+                });
+              }
+            }
           }
         }
       }
@@ -579,6 +715,9 @@ export function applyDeckReducePassives(
       targetSide,
       amount,
       destination: intent.destination,
+      logNote: intent.logNote,
+      preferredCardIds: intent.preferredCardIds,
+      originalTargetSide: intent.originalTargetSide,
     });
     if (rebuilt) result.push(rebuilt);
   }
@@ -588,7 +727,7 @@ export function applyDeckReducePassives(
 
 // 【追加・永続パッシブ割り込みパイプライン(グループ2: TRASH_MANA対応)】
 //
-// 対象: shield_counter_deck_protection(囲)・negate_own_mana_trash_by_opponent(吸)。
+// 対象: negate_own_mana_trash_by_opponent(吸)。
 // applyDeckReducePassivesとは別関数とする(対象Actionの種類が異なるため)。
 // 山札減少(DAMAGE/MOVE_CARD_BETWEEN_ZONES)ではなくTRASH_MANA(装備マナの破棄)のみを対象とする。
 //
@@ -596,10 +735,16 @@ export function applyDeckReducePassives(
 // 手動操作(全マナ破棄ボタン等)・認/獄の随伴処理(REMOVE_MONSTER_FROM_GAMEに伴うTRASH_MANA)は
 // 呼び出し側(useEffectExecutor.ts)で「効果解決経由のdispatchのみ」に絞ることで対象外とする。
 //
-// 適用順序: ①囲(shield_counter_deck_protection、reservedCards 1枚消費で全量ブロック)
-// → ②吸(negate_own_mana_trash_by_opponent、無条件で全量無効化)
-// → ③拾(own_mana_trashed_by_opponent_reaction)の発動条件検知(ブロックも無効化もされなかった場合のみ)。
-// 抑の優先順位(抑＞囲、7.3章5番の暫定案)は山札減少専用のためこのパイプラインには影響しない。
+// 適用順序: ①吸(negate_own_mana_trash_by_opponent、無条件で全量無効化)
+// → ②拾(own_mana_trashed_by_opponent_reaction)の発動条件検知(無効化されなかった場合のみ)。
+//
+// 【今回改訂・重大】囲(shield_counter_deck_protection)は本関数から撤去した。原文「あいてのカードの
+// 効果でじぶんの山札がへるとき」は山札減少のみが対象であり、装備マナの破棄(TRASH_MANA)を
+// 守る記載が無い(装備マナを守るのは吸の役目)。従来は山札減少側(applyDeckReducePassives)に
+// 囲が未配線だったための代替として、ここにも囲の判定が誤って残っていた。今回、山札減少側に
+// 囲を正式配線したことで、こちらの重複実装は不要と判断し撤去した。囲の`shield_counter_deck_protection`
+// トリガー・findApplicableShieldヘルパー自体はapplyDeckReducePassives側で引き続き使用する
+// (function宣言のためホイスティングにより、テキスト上の定義位置に関わらず参照可能)。
 //
 // 【設計注記】戻り値をGameAction[]ではなく{actions, pickupTrigger?}に拡張している。
 // 純粋関数であるこの層から、状態を持つuseEffectExecutor.ts側へ「拾の発動条件が成立したこと」を
@@ -610,8 +755,10 @@ interface ShieldMatch {
   bufferCardId: string; // 消費するreservedCardsの1枚
 }
 
-// shield_counter_deck_protection: 対象側(targetSide、TRASH_MANAでマナを失う側)の
+// shield_counter_deck_protection: 対象側(targetSide、山札が減る側)の
 // reservedCardsが1枚以上残っている未消費のものを先頭から1件採用する。
+// 【今回改訂】呼び出し元をapplyManaTrashPassives(TRASH_MANA)からapplyDeckReducePassives
+// (山札減少)へ変更した(装備マナ側の囲は撤去。上記コメント参照)。
 function findApplicableShield(
   gameState: GameState,
   targetSide: PlayerSide,
@@ -684,31 +831,8 @@ export function applyManaTrashPassives(
       continue;
     }
 
-    const shield = findApplicableShield(gameState, targetSide);
-    if (shield) {
-      // reservedCardsから1枚消費して全量ブロックする。バッファが尽きたら裏向きに戻す。
-      const monster = getPlayerState(gameState, targetSide).monsters[
-        shield.monsterIndex
-      ];
-      const remainingBuffer = (monster.reservedCards ?? []).filter(
-        (c) => c.id !== shield.bufferCardId,
-      );
-      consumptions.push({
-        type: 'CONSUME_RESERVED_CARD',
-        payload: {
-          side: targetSide,
-          monsterIndex: shield.monsterIndex,
-          cardId: shield.bufferCardId,
-        },
-      });
-      if (remainingBuffer.length === 0) {
-        consumptions.push({
-          type: 'FLIP_MONSTER',
-          payload: { side: targetSide, monsterIndex: shield.monsterIndex },
-        });
-      }
-      continue; // このTRASH_MANA自体は発生させない(ブロック)
-    }
+    // 【今回改訂・重大】囲(shield_counter_deck_protection)の判定はここから撤去した
+    // (装備マナ側の囲を撤去。関数冒頭のコメント参照)。
 
     if (hasApplicableNegate(gameState, targetSide)) {
       continue; // 吸: 無条件で無効化(このTRASH_MANA自体を発生させない)
@@ -872,10 +996,11 @@ export function getStarReactionActions(
       totals[target] = (totals[target] ?? 0) + hits * p.onMatch.count;
     });
   });
+  const logNote = `${sideLabel(drawerSide)}の星`;
   return (Object.entries(totals) as [PlayerSide, number][]).map(
     ([targetSide, amount]): GameAction => ({
       type: 'DAMAGE',
-      payload: { targetSide, amount },
+      payload: { targetSide, amount, logNote },
     }),
   );
 }

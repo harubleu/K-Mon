@@ -1320,45 +1320,14 @@ export function buildActionsFromSelection(
       ];
     }
 
-    case 'graveyard_recover_then_deck_trash_matching_count': {
-      if (answer.kind !== 'graveyard_select') return null;
-      const side = ctx.ownerSide;
-      const recoveredCount = answer.selectedCardIds.length;
-      const actions: GameAction[] = [];
-      if (recoveredCount === 0) return actions;
-      actions.push({
-        type: 'MOVE_CARD_BETWEEN_ZONES',
-        payload: {
-          sourceSide: side,
-          targetSide: side,
-          cardIds: answer.selectedCardIds,
-          sourceZone: 'cemetery',
-          targetZone: 'deck',
-        },
-      });
-      // 【今回改訂】公式QA(2026年4月): 化はシャッフルしない(山札を見ずに人のマナを好きな
-      // 場所へ戻し、次に山札を見て人以外を墓地へ捨てる)。戻す位置の指定UIは未実装のため、
-      // 戻したマナは山札の一番上に置かれる(並び替えモードで調整可能)。
-      // 回復と同数、trashExcludeKanji以外を山札の上から墓地へ(回復前のdeckを基準に選定して問題ない)
-      const deck = getPlayerState(ctx.gameState, side).deck;
-      const eligible = deck.filter(
-        (c) => getEffectiveKanji(c) !== effect.trashExcludeKanji,
-      );
-      const trashIds = eligible.slice(0, recoveredCount).map((c) => c.id);
-      if (trashIds.length > 0) {
-        actions.push({
-          type: 'MOVE_CARD_BETWEEN_ZONES',
-          payload: {
-            sourceSide: side,
-            targetSide: side,
-            cardIds: trashIds,
-            sourceZone: 'deck',
-            targetZone: 'cemetery',
-          },
-        });
-      }
-      return actions;
-    }
+    case 'graveyard_recover_then_deck_trash_matching_count':
+      // 【今回改訂・化の戻す位置UI】従来はここで「戻す→山札の上から人以外を選んで捨てる」の
+      // 2Actionを一括生成していたが、「山札を見ずに好きな場所へ戻す」という原文の要求を
+      // 満たすため、戻す(phase1)→並び替え(phase2、deck_reorder流用)→捨てる(phase2確定時)
+      // という3段階の特別分岐へ再設計した。copy_opponent_monster_effectと同じ理由
+      // (useEffectExecutor.ts側のconfirmSelection内で横取りされ、ここには到達しない)により、
+      // 型上の受け皿としてnullを返すだけの実装にした。
+      return null;
 
     // 【追加】囲: 選択された墓地カードをreservedCardsへ送る(墓地起点)。
     // 【今回改訂】表面固定永続効果の発動ガード: 前準備発動は1回限りとし、発動と同時に

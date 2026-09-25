@@ -27,6 +27,7 @@ import {
   applyDeckReducePassives,
   getPassiveListGatedByBan,
   resolveSide,
+  sideLabel,
 } from './effectExecutor';
 import { getEffectiveKanji } from './manaKanji';
 
@@ -246,6 +247,7 @@ export function applyGraveyardReactions(
             payload: {
               targetSide: resolveSide(p.onTrigger.targetSide, side),
               amount: count * p.onTrigger.count,
+              logNote: `${sideLabel(side)}の養(${p.targetKanji}が墓地へ)`,
             },
           });
         });

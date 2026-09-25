@@ -40,7 +40,9 @@ export const WildcardDesignationModal: React.FC<
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 1000,
+        // 【今回改訂・検×花の指定UI】DeckModal(effectKanjiSelect実行中)から開かれた場合、
+        // その上に重ねて表示する必要があるため、他モーダル(zIndex:1000)より高くする。
+        zIndex: 1100,
       }}
     >
       <div

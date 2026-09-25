@@ -524,6 +524,12 @@ export type DamageAction = {
     targetSide?: 'opponent' | 'player';
     side?: PlayerSide;
     amount: number;
+    // 【追加・星/流/養の専用ログ】山札減少の発生源を示す注記(任意)。指定時、reducerは
+    // 通常のログメッセージにこの注記を付記する。永続パッシブ割り込みパイプライン
+    // (applyDeckReducePassives)を経由しても、DeckReduceIntent.logNoteとして引き継がれ、
+    // 最終的に組み立て直されるMOVE_CARD_BETWEEN_ZONES側にも引き継がれる(型・実装は
+    // effectExecutor.tsのDeckReduceIntent/buildDeckReduceAction参照)。
+    logNote?: string;
   };
 };
 
@@ -556,6 +562,16 @@ export type MoveCardBetweenZonesAction = {
     cardIds: string[];
     sourceZone: ZoneType;
     targetZone: ZoneType;
+    // 【追加・星/流/養の専用ログ】DamageAction.logNoteと同じ意味・同じ経路で引き継がれる注記。
+    logNote?: string;
+    // 【追加・化の戻す位置UI】sourceZone:'deck'かつtargetZoneがcemetery/exileの場合、
+    // 永続パッシブ割り込みパイプライン(applyDeckReducePassives)は通常cardIdsを無視して
+    // 「対象側の山札の現在の上からN枚」に作り直す(浮・抑・囲・転嫁でamountが変わり得るため)。
+    // preferredCardIdsを指定すると、パイプライン最終段でtargetSideが変化していない
+    // (転嫁が発生していない)場合に限り、このIDリストを優先して(現在の山札に実在するものだけ、
+    // 指定順に)採用する。化(人以外を選んで捨てる)のように「特定条件に合うカードを選ぶ」効果が、
+    // 浮・抑・囲の軽減対象にはなりつつも、カード自体の選定基準は保てるようにするための機構。
+    preferredCardIds?: string[];
   };
 };
 

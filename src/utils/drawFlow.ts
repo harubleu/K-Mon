@@ -25,6 +25,7 @@ import {
   getStarReactionActions,
   getTurnStartDrawCount,
   resolveDrawReplace,
+  sideLabel,
 } from './effectExecutor';
 import { applyGraveyardReactions } from './graveyardReactions';
 import { getEffectiveKanji } from './manaKanji';
@@ -144,7 +145,11 @@ export function planDrawReactions(
       [
         {
           type: 'DAMAGE',
-          payload: { targetSide: drawerSide, amount: flow.hitCount },
+          payload: {
+            targetSide: drawerSide,
+            amount: flow.hitCount,
+            logNote: `${sideLabel(flow.watcherSide)}の流(予想的中)`,
+          },
         },
       ],
       flow.watcherSide,

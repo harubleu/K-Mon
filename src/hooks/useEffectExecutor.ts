@@ -32,6 +32,7 @@ import {
   applyManaTrashPassives,
 } from '../utils/effectExecutor';
 import { applyGraveyardReactions } from '../utils/graveyardReactions';
+import { getEffectiveKanji } from '../utils/manaKanji';
 import {
   describeSelectionRequirement,
   buildActionsFromSelection,
@@ -79,6 +80,12 @@ export interface PendingSelection {
     originalOwnerSide: PlayerSide;
     originalSourceMonsterIndex?: number;
   };
+  // 【今回追加・化の戻す位置UI】graveyard_recover_then_deck_trash_matching_count(化)専用。
+  // phase1(graveyard_select、墓地から戻す人のマナを選ぶ)確定後、山札全体の並び替え
+  // (deck_reorder、scope:'full')へ進み、戻したマナを好きな位置に置けるようにする。
+  // この並び替え確定時、選んだ枚数ぶん「人以外」を山札の上から墓地へ送る最終ステップへ
+  // 進むために、選んだ枚数(=これから墓地へ送る枚数)をここに保持する。
+  kaTrashPendingCount?: number;
 }
 
 // dispatch済みのGameAction群から、「墓地へ送られたカードID」を抽出する。
@@ -503,6 +510,105 @@ export const useEffectExecutor = (
         pendingSelection.ownerSide,
         pendingSelection.sourceMonsterIndex,
       );
+      return;
+    }
+
+    // 【今回追加・化の戻す位置UI】phase1(graveyard_select、戻す人のマナを選ぶ)確定時。
+    // 「山札を見ずに好きな場所へ戻す」という原文の要求を実現するため、①選んだカードを
+    // まず山札の一番上へ戻し(即dispatch)、②続けて山札全体の並び替え(deck_reorder、
+    // scope:'full')を開き、戻したカードを好きな位置へ移動できるようにする。
+    // 0枚選択(不発)の場合は何もせず終了する。
+    if (
+      pendingSelection.effect.effectId ===
+        'graveyard_recover_then_deck_trash_matching_count' &&
+      pendingSelection.requirement.kind === 'graveyard_select' &&
+      answer.kind === 'graveyard_select'
+    ) {
+      const side = pendingSelection.ownerSide;
+      const recoveredIds = answer.selectedCardIds;
+      if (recoveredIds.length === 0) {
+        setPendingSelection(null);
+        return;
+      }
+      dispatchWithPassives(
+        [
+          {
+            type: 'MOVE_CARD_BETWEEN_ZONES',
+            payload: {
+              sourceSide: side,
+              targetSide: side,
+              cardIds: recoveredIds,
+              sourceZone: 'cemetery',
+              targetZone: 'deck',
+            },
+          },
+        ],
+        side,
+      );
+      setPendingSelection({
+        requirement: { kind: 'deck_reorder', side, scope: 'full' },
+        effect: pendingSelection.effect,
+        ownerSide: side,
+        kaTrashPendingCount: recoveredIds.length,
+      });
+      return;
+    }
+
+    // 【今回追加・化の戻す位置UI】phase2(deck_reorder、山札全体の並び替え)確定時。
+    // 並び替えを確定させた上で、化の原文「その枚数、(人)以外のマナを山札から選んで
+    // 墓地に捨てる」を実行する。対象は並び替え後の山札の上から、kaTrashPendingCount枚
+    // (=①で戻した枚数)ぶん、trashExcludeKanji(人)以外を機械的に選ぶ(選択UIは不要、
+    // 既存のresolveMonsterEffect実装を踏襲)。answer.orderedCardIdsは既にユーザーが
+    // 確定させた「並び替え後の完全な山札順」のため、これを基準にkanjiを引き直す
+    // (gameStateは①のdispatch・②のモーダル操作を経て、この時点では最新の状態)。
+    if (
+      pendingSelection.effect.effectId ===
+        'graveyard_recover_then_deck_trash_matching_count' &&
+      pendingSelection.requirement.kind === 'deck_reorder' &&
+      answer.kind === 'deck_reorder' &&
+      pendingSelection.kaTrashPendingCount !== undefined
+    ) {
+      const effect = pendingSelection.effect;
+      const side = pendingSelection.ownerSide;
+      const recoveredCount = pendingSelection.kaTrashPendingCount;
+      dispatch({
+        type: 'REORDER_DECK',
+        payload: { side, orderedCardIds: answer.orderedCardIds },
+      });
+      setPendingSelection(null);
+      if (effect.effectId !== 'graveyard_recover_then_deck_trash_matching_count')
+        return; // 型の絞り込み用(理論上到達しない)
+      const deckById = new Map(
+        getPlayerState(gameState, side).deck.map((c) => [c.id, c]),
+      );
+      const trashIds: string[] = [];
+      for (const id of answer.orderedCardIds) {
+        if (trashIds.length >= recoveredCount) break;
+        const card = deckById.get(id);
+        if (card && getEffectiveKanji(card) !== effect.trashExcludeKanji) {
+          trashIds.push(id);
+        }
+      }
+      if (trashIds.length > 0) {
+        dispatchWithPassives(
+          [
+            {
+              type: 'MOVE_CARD_BETWEEN_ZONES',
+              payload: {
+                sourceSide: side,
+                targetSide: side,
+                cardIds: trashIds,
+                sourceZone: 'deck',
+                targetZone: 'cemetery',
+                // 【今回追加】並び替え後の「人以外」選定結果をパイプライン側でも
+                // 優先採用させる(preferredCardIds参照。effectExecutor.ts参照)。
+                preferredCardIds: trashIds,
+              },
+            },
+          ],
+          side,
+        );
+      }
       return;
     }
 

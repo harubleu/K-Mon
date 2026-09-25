@@ -65,6 +65,12 @@ export interface DeckModalProps {
     onConfirm: (selectedKanji: string[]) => void;
     onCancel: () => void;
   } | null;
+  // 【今回追加・検×花の指定UI】このモーダルが表示している山札の持ち主(side)が表向きの花
+  // (mana_kanji_wildcard)を持っている場合の対象漢字(屮)。effectKanjiSelect実行中
+  // (械・泣・検・派)に、山札を見ながらその場で屮の色を指定・見直せるようにするための入口。
+  // 未指定・nullならボタン自体を表示しない(花を持たない側では従来通り何も変わらない)。
+  wildcardKanji?: string | null;
+  onOpenWildcardDesignation?: () => void;
 }
 
 export const DeckModal: React.FC<DeckModalProps> = ({
@@ -81,6 +87,8 @@ export const DeckModal: React.FC<DeckModalProps> = ({
   effectSelection = null, // 【追加】
   effectReorder = null, // 【追加】
   effectKanjiSelect = null,
+  wildcardKanji = null, // 【今回追加・検×花の指定UI】
+  onOpenWildcardDesignation,
 }) => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedKanji, setSelectedKanji] = useState<string[]>([]);
@@ -244,6 +252,47 @@ export const DeckModal: React.FC<DeckModalProps> = ({
             style={{ fontSize: '0.8rem', color: '#6366f1', margin: '4px 0' }}
           >
             山札の上から{effectKanjiSelect.revealScope}枚を公開しています
+          </div>
+        )}
+
+        {/* 【今回追加・検×花の指定UI】effectKanjiSelect実行中(械・泣・検・派)に、
+            この山札の持ち主が表向きの花を持っていれば、その場で屮の色指定モーダルを
+            開けるショートカットボタンを表示する。従来はPlayerZone本体のボタンが
+            DeckModalの下に隠れてしまい、山札を見ながら指定できなかった
+            (「検を使われる際の相手の指定は事前に必要」という既知の限界を解消)。 */}
+        {effectKanjiSelect && wildcardKanji && onOpenWildcardDesignation && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '0.8rem',
+              color: '#92400e',
+              backgroundColor: '#fff7ed',
+              border: '1px solid #f59e0b',
+              borderRadius: '4px',
+              padding: '6px 8px',
+              margin: '4px 0',
+            }}
+          >
+            <span>
+              この山札には花({wildcardKanji})の万能マナが含まれます。
+            </span>
+            <button
+              onClick={onOpenWildcardDesignation}
+              style={{
+                padding: '4px 10px',
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+                border: '1px solid #f59e0b',
+                borderRadius: '4px',
+                backgroundColor: '#fff',
+                color: '#92400e',
+                fontWeight: 'bold',
+              }}
+            >
+              {wildcardKanji}の色を指定する
+            </button>
           </div>
         )}
 

@@ -346,11 +346,12 @@ export const App: React.FC = () => {
     dispatch({ type: 'NEXT_PHASE' });
   };
 
-  // 【追加・激】予想の宣言をキャンセルした場合も、ターン終了自体は通常通り進行させる
-  // (「宣言必須で足止めする」設計ではなく、任意宣言として扱う方針)。
+  // 【今回改訂・裁定確定】予想の宣言をキャンセルした場合、ターン終了自体も取りやめる。
+  // 従来は「宣言なしでターン終了を続行する」設計だったが、宣言せずにターンが終わってしまう
+  // 事故を防ぐため、流(予想キャンセル=ドローしない)と同じ「キャンセル=その場の操作全体を
+  // 取りやめる」挙動に統一した。ターン終了ボタンを再度押せば、改めて予想モーダルが開く。
   const handleCancelTurnEndPrediction = () => {
     setPendingTurnEndPrediction(null);
-    dispatch({ type: 'NEXT_PHASE' });
   };
 
   const handleAutoDraw = (player: PlayerSide) => {

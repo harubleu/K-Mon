@@ -374,6 +374,10 @@ export const PlayerZone: React.FC<PlayerZoneProps> = ({
         effectSelection={effectSelection}
         effectReorder={effectReorder}
         effectKanjiSelect={effectKanjiSelect}
+        wildcardKanji={wildcardKanji}
+        onOpenWildcardDesignation={
+          onDesignateMana ? () => setIsWildcardModalOpen(true) : undefined
+        }
       />
 
       {/* ドロー確認モーダル */}

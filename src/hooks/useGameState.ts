@@ -18,6 +18,8 @@ import { getEffectiveKanji } from '../utils/manaKanji';
 import {
   getWildcardKanji,
   getPassiveList,
+  getPassiveListGatedByBan,
+  isMonsterEffectsDisabledByOpponentBan,
   resolveSide,
   getOpponentSide,
 } from '../utils/effectExecutor';
@@ -54,13 +56,23 @@ const getZoneLabel = (zone: ZoneType): string => {
 // 【追加】保: 表面かつreservedCardsを持つモンスターがいる側の山札が0の場合、
 // そのreservedCardsを山札へ戻す(ターン終了時の決定的処理。選択UIは不要)。
 // 「効果発動」ボタン経由ではなく、AUTO_DRAWと同種のReducer内蔵処理として扱う。
+// 【今回改訂・重大】従来はeffect.effectIdを確認しておらず、reservedCardsを持つモンスターなら
+// 保・囲を問わず対象になっていた(囲が表向きでバッファを持ったまま山札が0でターンを終えると、
+// 囲のバッファまで山札へ強制的に戻され、囲が裏向きになってしまう不具合)。保の原文
+// 「じぶんの山札がゼロになったターンの終了時、のこりのマナカードを山札に戻す」は保専用の
+// 記述であり、囲には同種の記載が無いため、対象をdeck_partial_to_reserve(保)を持つ
+// モンスターに限定した。
 const returnReservedCardsIfDeckEmpty = (
   playerState: PlayerState,
 ): PlayerState => {
   if (playerState.deck.length > 0) return playerState;
 
   const targetMonsterIndex = playerState.monsters.findIndex(
-    (m) => !m.isFlipped && m.reservedCards && m.reservedCards.length > 0,
+    (m) =>
+      !m.isFlipped &&
+      m.effect?.effectId === 'deck_partial_to_reserve' &&
+      m.reservedCards &&
+      m.reservedCards.length > 0,
   );
   if (targetMonsterIndex === -1) return playerState;
 
@@ -123,6 +135,10 @@ const evaluateGameStatus = (
 // 山札0枚判定のように「不利な側の逆転猶予」を確保する必要がない。そのため即時判定とし、
 // あらゆるAction後の状態変化を(gameReducerの内部ではなく)useGameState側で一括検知する
 // (下記useEffect参照)。「5まいより多い」＝6枚以上(count > threshold)として判定する。
+// 【今回改訂・重大】泊の無効化範囲を勝利系(暮・浅・政・激)まで拡大した(ユーザー確認済み)。
+// 「発動はするが効果は無効」の原則に従い、暮のトリガー判定自体をgetPassiveListGatedByBan
+// (isFlipped+泊ゲート込み)経由に切り替えた。従来は素のgetPassiveListを使っており、
+// 相手の泊で無効化中でも暮の勝利条件が成立してしまっていた。
 const evaluateGraveyardThresholdWinConditions = (
   state: GameState,
 ): { status: GameStatus; logMessage: string } | null => {
@@ -131,7 +147,7 @@ const evaluateGraveyardThresholdWinConditions = (
     const monsters = state[side].monsters;
     for (const monster of monsters) {
       if (monster.isFlipped) continue; // 表向き固定の永続効果のため
-      for (const passive of getPassiveList(monster)) {
+      for (const passive of getPassiveListGatedByBan(monster, state, side)) {
         if (passive.trigger !== 'graveyard_kanji_threshold_win') continue;
         const count = state[side].cemetery.filter(
           (c) => getEffectiveKanji(c) === passive.targetKanji,
@@ -160,9 +176,15 @@ const evaluateTurnStartCardWinConditions = (
   const nextPlayerState = state[nextTurnPlayer];
 
   // 浅（own_turn_start_win_condition）
+  // 【今回改訂・重大】泊の無効化範囲を勝利系まで拡大(ユーザー確認済み)。
+  // getPassiveListGatedByBan経由に切り替え、相手の泊で無効化中は判定対象から外す。
   for (const monster of nextPlayerState.monsters) {
     if (monster.isFlipped) continue;
-    for (const passive of getPassiveList(monster)) {
+    for (const passive of getPassiveListGatedByBan(
+      monster,
+      state,
+      nextTurnPlayer,
+    )) {
       if (passive.trigger !== 'own_turn_start_win_condition') continue;
       const targetSide = resolveSide(passive.targetSide, nextTurnPlayer);
       const count = state[targetSide].deck.length;
@@ -182,10 +204,11 @@ const evaluateTurnStartCardWinConditions = (
   // 政（seeded_mana_return_win_condition）。混入後は相手が引いて墓地送りにするまで
   // 毎自ターン開始時に判定し続ける(消費・回数制限の概念なし)。
   const opponentCemetery = state[opponentOfNext].cemetery;
+  // 【今回改訂・重大】政も暮・浅と同様、泊の無効化範囲を勝利系まで拡大(ユーザー確認済み)。
   const seiMonster = nextPlayerState.monsters.find(
     (m) =>
       !m.isFlipped &&
-      getPassiveList(m).some(
+      getPassiveListGatedByBan(m, state, nextTurnPlayer).some(
         (p) => p.trigger === 'seeded_mana_return_win_condition',
       ),
   );
@@ -241,6 +264,11 @@ const consumeDisableOpponentEffectsCounters = (
 // の直後に呼ばれる。drawerSide(実際に引いた側)の相手が、表向きの激で予想を宣言していれば
 // 漢字を照合する。的中・不的中を問わず、判定後は必ず予想をクリアする(「次にひく」一回限りの
 // 予想のため)。的中していればgameStatusを更新する(既に決着済みなら上書きしない)。
+// 【今回改訂・重大】泊の無効化範囲を勝利系(暮・浅・政・激)まで拡大した(ユーザー確認済み)。
+// 激は「宣言(ターン終了時)」と「照合(ドロー時)」の2フェーズに分かれるため、「発動はするが
+// 効果は無効」の原則に従い、宣言フェーズ(findOwnTurnEndPredictWinMonsterIndex)自体は
+// 変更せず宣言を許可したまま、的中判定(本関数)のみを泊ゲートの対象にした。宣言時ではなく
+// 照合(ドロー)時点でのban状態を見る(宣言後にban状態が変化する可能性があるため)。
 const applyPredictedDrawCheck = (
   state: GameState,
   drawerSide: PlayerSide,
@@ -260,7 +288,11 @@ const applyPredictedDrawCheck = (
   if (monsterIndex === -1) return state;
 
   const monster = watcherState.monsters[monsterIndex];
-  const isHit = monster.predictedDrawKanji === drawnKanji;
+  // 【今回追加】照合(ドロー)時点で、watcherSide(激の所有者)が相手の泊で無効化中なら
+  // 「発動(予想の宣言)はするが効果(勝利)は無効」として扱い、的中していても不発とする。
+  const isHit =
+    monster.predictedDrawKanji === drawnKanji &&
+    !isMonsterEffectsDisabledByOpponentBan(state, watcherSide);
   const updatedMonsters = [...watcherState.monsters];
   updatedMonsters[monsterIndex] = { ...monster, predictedDrawKanji: undefined };
 
@@ -891,7 +923,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
     }
 
     case 'DAMAGE': {
-      const { targetSide, side, amount } = action.payload;
+      const { targetSide, side, amount, logNote } = action.payload;
       const newTargetSide = targetSide ?? side;
       if (!newTargetSide) return state;
 
@@ -911,13 +943,13 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         },
       };
 
-      const newLogs = [
-        createLog(
-          'attack',
-          `${getSideLabel(newTargetSide)}の山札から ${damagedCards.length} 枚が墓地へ送られました。`,
-        ),
-        ...state.logs,
-      ];
+      // 【今回追加・星/流/養の専用ログ】logNoteがあれば発生源を明記する
+      // (「〇〇の星」「〇〇の流(予想的中)」「〇〇の養(羊が墓地へ)」等)。
+      const damageMsg = logNote
+        ? `${logNote}により、${getSideLabel(newTargetSide)}の山札から ${damagedCards.length} 枚が墓地へ送られました。`
+        : `${getSideLabel(newTargetSide)}の山札から ${damagedCards.length} 枚が墓地へ送られました。`;
+
+      const newLogs = [createLog('attack', damageMsg), ...state.logs];
 
       return { ...nextState, logs: newLogs };
     }
@@ -1200,6 +1232,7 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
         cardIds,
         sourceZone = 'deck',
         targetZone = 'cemetery',
+        logNote,
       } = action.payload;
 
       const sourcePlayer = state[sourceSide];
@@ -1268,7 +1301,9 @@ const gameReducer = (state: GameState, action: GameAction): GameState => {
 
       const logType: LogType =
         sourceZone === 'deck' && targetZone === 'pending' ? 'draw' : 'system';
-      const moveMsg = `${getSideLabel(sourceSide)}の${getZoneLabel(sourceZone)}から${getSideLabel(targetSide)}の${getZoneLabel(targetZone)}へ ${movingCards.length} 枚カードを移動しました。`;
+      // 【今回追加・星/流/養の専用ログ】logNoteがあれば発生源を明記する。
+      const baseMoveMsg = `${getSideLabel(sourceSide)}の${getZoneLabel(sourceZone)}から${getSideLabel(targetSide)}の${getZoneLabel(targetZone)}へ ${movingCards.length} 枚カードを移動しました。`;
+      const moveMsg = logNote ? `${logNote}により、${baseMoveMsg}` : baseMoveMsg;
 
       const newLogs = [createLog(logType, moveMsg), ...state.logs];
 
