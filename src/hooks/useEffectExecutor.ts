@@ -86,6 +86,9 @@ export interface PendingSelection {
   // この並び替え確定時、選んだ枚数ぶん「人以外」を山札の上から墓地へ送る最終ステップへ
   // 進むために、選んだ枚数(=これから墓地へ送る枚数)をここに保持する。
   kaTrashPendingCount?: number;
+  // 【追加・方】deck_iterative_select_trash専用。これまでに墓地へ送ったカードIDの累積
+  // (継続時の次requirement構築、および確定時にstep2へjustTrashedCardIdsとして引き継ぐため)。
+  iterativeSelectSentIds?: string[];
 }
 
 // dispatch済みのGameAction群から、「墓地へ送られたカードID」を抽出する。
@@ -576,7 +579,9 @@ export const useEffectExecutor = (
         payload: { side, orderedCardIds: answer.orderedCardIds },
       });
       setPendingSelection(null);
-      if (effect.effectId !== 'graveyard_recover_then_deck_trash_matching_count')
+      if (
+        effect.effectId !== 'graveyard_recover_then_deck_trash_matching_count'
+      )
         return; // 型の絞り込み用(理論上到達しない)
       const deckById = new Map(
         getPlayerState(gameState, side).deck.map((c) => [c.id, c]),
@@ -612,14 +617,79 @@ export const useEffectExecutor = (
       return;
     }
 
+    // 【追加・方】deck_iterative_select_trash(1枚ずつめくって送るか決めるフェーズ)の確定処理。
+    if (
+      pendingSelection.effect.effectId === 'deck_iterative_select_trash' &&
+      pendingSelection.requirement.kind === 'deck_iterative_select' &&
+      answer.kind === 'deck_iterative_select'
+    ) {
+      const effect = pendingSelection.effect;
+      const req = pendingSelection.requirement;
+      const topCard = gameState[req.side].deck[0];
+      if (!topCard) {
+        setPendingSelection(null);
+        return;
+      }
+      const sentSoFar = pendingSelection.iterativeSelectSentIds ?? [];
+      const newSentIds = [...sentSoFar, topCard.id];
+
+      dispatchWithPassives(
+        [
+          {
+            type: 'MOVE_CARD_BETWEEN_ZONES',
+            payload: {
+              sourceSide: req.side,
+              targetSide: req.side,
+              cardIds: [topCard.id],
+              sourceZone: 'deck',
+              targetZone: effect.destination === 'exile' ? 'exile' : 'cemetery',
+            },
+          },
+        ],
+        pendingSelection.ownerSide,
+      );
+
+      const remainingDeckAfter = gameState[req.side].deck.length - 1;
+      const reachedMax = newSentIds.length >= effect.maxCount;
+      const deckExhausted = remainingDeckAfter <= 0;
+
+      if (answer.action === 'stop' || reachedMax || deckExhausted) {
+        const resume = pendingSelection.sequenceContext;
+        setPendingSelection(null);
+        if (resume) {
+          trySequenceFrom(
+            resume.remainingSteps,
+            pendingSelection.ownerSide,
+            pendingSelection.sourceMonsterIndex,
+            newSentIds,
+          );
+        }
+        return;
+      }
+
+      setPendingSelection({
+        ...pendingSelection,
+        requirement: {
+          kind: 'deck_iterative_select',
+          side: req.side,
+          maxCount: effect.maxCount,
+          sentCount: newSentIds.length,
+        },
+        iterativeSelectSentIds: newSentIds,
+      });
+      return;
+    }
+
     // 【追加】graveyard_select_equip・deck_select_equip(令)・deck_kanji_search_equip(草)の
     // (monsterTargetMode)phase1確定時。まだActionを組み立てず、
     // 選ばれた装備先モンスターのindexを載せてphase2(墓地カード選択)へ進む。
     // sequenceContextが存在する場合(生・方のように外側sequenceのstep2として発動している場合)は
     // そのまま引き継ぎ、sequence自体はまだ進めない(phase2の確定を待つ)。
+    // 【今回改訂】graveyard_select_equipはGraveyardEquipModalへの一本化により
+    // monster_selectフェーズを経由しなくなったため、この分岐から除外した
+    // (令・草はdeck_select_equip/deck_kanji_search_equipのまま据え置き、今回対象外)。
     if (
-      (pendingSelection.effect.effectId === 'graveyard_select_equip' ||
-        pendingSelection.effect.effectId === 'deck_select_equip' ||
+      (pendingSelection.effect.effectId === 'deck_select_equip' ||
         pendingSelection.effect.effectId === 'deck_kanji_search_equip') &&
       pendingSelection.requirement.kind === 'monster_select' &&
       answer.kind === 'monster_select'

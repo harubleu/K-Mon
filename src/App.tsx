@@ -43,6 +43,8 @@ import { ChoiceOfEffectsModal } from './components/GameBoard/ChoiceOfEffectsModa
 import { ZoneMoveSelectModal } from './components/GameBoard/ZoneMoveSelectModal';
 import type { ZoneMoveCandidate } from './components/GameBoard/ZoneMoveSelectModal';
 import { DeckCompositionPredictModal } from './components/GameBoard/DeckCompositionPredictModal';
+import { GraveyardEquipModal } from './components/GameBoard/GraveyardEquipModal';
+import { DeckIterativeSelectModal } from './components/GameBoard/DeckIterativeSelectModal';
 import {
   getActivatableEffect,
   findOwnTurnEndPredictWinMonsterIndex,
@@ -264,7 +266,10 @@ export const App: React.FC = () => {
     cardId: string,
     kanji: string | null,
   ) => {
-    dispatch({ type: 'SET_MANA_DESIGNATION', payload: { side, cardId, kanji } });
+    dispatch({
+      type: 'SET_MANA_DESIGNATION',
+      payload: { side, cardId, kanji },
+    });
   };
 
   const handleRecover = (side: PlayerSide, manaIds: string[]) => {
@@ -663,6 +668,53 @@ export const App: React.FC = () => {
     };
   })();
 
+  // 【追加】兄・各・共・生・方用(graveyard_equip_select)
+  const graveyardEquipSelectProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'graveyard_equip_select')
+      return null;
+    const req = pendingSelection.requirement;
+    return {
+      side: req.side,
+      cemetery: gameState[req.side].cemetery,
+      monsters: gameState[req.side].monsters,
+      pairCount: req.pairCount,
+      kanjiFilter: req.kanjiFilter,
+      cardIdFilter: req.cardIdFilter,
+      excludeMonsterIndex: req.excludeMonsterIndex,
+      disabledMonsters: req.disabledMonsters,
+      wildcardKanji: getWildcardKanji(gameState, req.side),
+      singleMonster: req.singleMonster,
+      onConfirm: (
+        pairs: {
+          cardId: string;
+          monsterIndex: number;
+          slotIndex: number;
+        }[],
+      ) => confirmSelection({ kind: 'graveyard_equip_select', pairs }),
+      onCancel: cancelSelection,
+    };
+  })();
+
+  // 【追加】方用: deck_iterative_select
+  const deckIterativeSelectProps = (() => {
+    if (!pendingSelection) return null;
+    if (pendingSelection.requirement.kind !== 'deck_iterative_select')
+      return null;
+    const req = pendingSelection.requirement;
+    const deck = gameState[req.side].deck;
+    const card = deck[0] ?? null;
+    const canContinue = req.sentCount + 1 < req.maxCount && deck.length > 1;
+    return {
+      card,
+      sentCount: req.sentCount,
+      maxCount: req.maxCount,
+      canContinue,
+      onDecision: (action: 'stop' | 'continue') =>
+        confirmSelection({ kind: 'deck_iterative_select', action }),
+    };
+  })();
+
   // 【追加・拾】pickup_select用(phase2: 拾ったカードからの選択)
   const pickupSelectProps = (() => {
     if (!pendingSelection) return null;
@@ -953,6 +1005,32 @@ export const App: React.FC = () => {
             onCancel={monsterSelectProps?.onCancel ?? (() => {})}
           />
 
+          {/* 【追加】兄・各・共・生・方用 */}
+          <GraveyardEquipModal
+            isOpen={!!graveyardEquipSelectProps}
+            side={graveyardEquipSelectProps?.side ?? 'player'}
+            cemetery={graveyardEquipSelectProps?.cemetery ?? []}
+            monsters={graveyardEquipSelectProps?.monsters ?? []}
+            pairCount={graveyardEquipSelectProps?.pairCount ?? 0}
+            kanjiFilter={graveyardEquipSelectProps?.kanjiFilter}
+            cardIdFilter={graveyardEquipSelectProps?.cardIdFilter}
+            excludeMonsterIndex={graveyardEquipSelectProps?.excludeMonsterIndex}
+            disabledMonsters={graveyardEquipSelectProps?.disabledMonsters}
+            wildcardKanji={graveyardEquipSelectProps?.wildcardKanji}
+            singleMonster={graveyardEquipSelectProps?.singleMonster}
+            onConfirm={graveyardEquipSelectProps?.onConfirm ?? (() => {})}
+            onCancel={graveyardEquipSelectProps?.onCancel ?? (() => {})}
+          />
+
+          <DeckIterativeSelectModal
+            isOpen={!!deckIterativeSelectProps}
+            card={deckIterativeSelectProps?.card ?? null}
+            sentCount={deckIterativeSelectProps?.sentCount ?? 0}
+            maxCount={deckIterativeSelectProps?.maxCount ?? 0}
+            canContinue={deckIterativeSelectProps?.canContinue ?? false}
+            onDecision={deckIterativeSelectProps?.onDecision ?? (() => {})}
+          />
+
           {/* 【追加】拾用 */}
           <PickupSelectModal
             isOpen={!!pickupSelectProps}
@@ -988,7 +1066,9 @@ export const App: React.FC = () => {
             candidates={
               pendingDrawReplace
                 ? gameState[pendingDrawReplace.side].cemetery
-                    .filter((c) => pendingDrawReplace.candidateIds.includes(c.id))
+                    .filter((c) =>
+                      pendingDrawReplace.candidateIds.includes(c.id),
+                    )
                     .map((c) => ({
                       id: c.id,
                       kanji: c.kanji,

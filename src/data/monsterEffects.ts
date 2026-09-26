@@ -946,7 +946,7 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
       effectId: 'sequence',
       steps: [
         {
-          effectId: 'deck_select_trash',
+          effectId: 'deck_iterative_select_trash',
           targetSide: 'self',
           maxCount: 4,
           destination: 'cemetery',
@@ -956,6 +956,7 @@ export const MONSTER_EFFECTS: Record<string, MonsterEffectEntry> = {
           count: 3,
           monsterTargetMode: 'exclude_self',
           sourceRestriction: 'just_trashed_by_this_effect',
+          singleTargetMonster: true,
         },
       ],
     },

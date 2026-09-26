@@ -155,12 +155,38 @@ export interface DeckCompositionPredictRequirement {
   kind: 'deck_composition_predict';
 }
 
+// 【追加】
+// --- 兄・各・共・生・方(graveyard_select_equip、monsterTargetMode指定時): 墓地のカードと
+// 装備先モンスターの空きスロットをペアリングして選ばせるケース。pairCountちょうどの
+// ペアが揃うまで確定できない(部分確定は許容しない)。
+export interface GraveyardEquipSelectRequirement {
+  kind: 'graveyard_equip_select';
+  side: PlayerSide;
+  pairCount: number;
+  kanjiFilter?: string[];
+  cardIdFilter?: string[];
+  excludeMonsterIndex?: number;
+  disabledMonsters?: { index: number; reason: 'removed_from_game' }[];
+  // 【今回追加・方】trueなら全ペアを同一モンスターへ強制する。
+  singleMonster?: boolean;
+}
+
+// --- 方: 山札の上から1枚ずつめくり、送るかどうかを都度決めるケース ---
+export interface DeckIterativeSelectRequirement {
+  kind: 'deck_iterative_select';
+  side: PlayerSide;
+  maxCount: number;
+  sentCount: number; // これまでに送った枚数(現在表示中のカードは含まない)
+}
+
 export type SelectionRequirement =
   | DeckSelectRequirement
+  | DeckIterativeSelectRequirement
   | DeckReorderRequirement
   | KanjiTypeSelectRequirement
   | DeckKanjiRevealSelectRequirement
   | GraveyardSelectRequirement
+  | GraveyardEquipSelectRequirement
   | EquipSwapSelectRequirement
   | MixedZoneTrashSelectRequirement
   | MonsterSelectRequirement
@@ -270,7 +296,9 @@ export function describeSelectionRequirement(
             ? openSlots.length
             : openSlots.filter((k) => k === effect.targetKanji).length;
         const deckCount = deck.filter(
-          (c) => getEffectiveKanji(c) === effect.targetKanji || c.kanji === effect.targetKanji,
+          (c) =>
+            getEffectiveKanji(c) === effect.targetKanji ||
+            c.kanji === effect.targetKanji,
         ).length;
         const cappedMax = Math.min(effect.maxCount, openCount, deckCount);
         if (cappedMax === 0) return null; // 装備できる候補が無ければ効果不発
@@ -378,74 +406,82 @@ export function describeSelectionRequirement(
     }
 
     case 'graveyard_select_equip': {
-      // 【変更】monsterTargetMode対応: 装備先モンスターを選ばせる場合、phase1として
-      // 装備先モンスター選択を先に返す。'exclude_self'なら発動元を除外、
-      // 'include_self'なら発動元も選択可能(除外指定なし)。
-      // ctx.equipTargetMonsterIndexが確定済み(phase2)なら通常のgraveyard_selectへ進む。
-      if (
-        effect.monsterTargetMode &&
-        ctx.equipTargetMonsterIndex === undefined
-      ) {
+      // monsterTargetMode未指定(現状該当カード無し。将来のため維持): 発動元自身へ固定装備。
+      if (!effect.monsterTargetMode) {
         if (ctx.sourceMonsterIndex === undefined) return null;
+        const targetMonster = getPlayerState(ctx.gameState, ctx.ownerSide)
+          .monsters[ctx.sourceMonsterIndex];
+        if (!targetMonster) return null;
+        const availableKanji = Array.from(
+          new Set(getOpenSlotKanji(targetMonster)),
+        );
+        const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+        const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
+        const eligibleCount = cemetery.filter((c) =>
+          canFillOpenSlot(c, availableKanji, wildcard),
+        ).length;
+        const cappedCount = Math.min(effect.count, eligibleCount);
+        if (cappedCount === 0) return null;
         return {
-          kind: 'monster_select',
+          kind: 'graveyard_select',
           side: ctx.ownerSide,
-          constraint: { min: 1, max: 1 },
-          excludeMonsterIndex:
-            effect.monsterTargetMode === 'exclude_self'
-              ? ctx.sourceMonsterIndex
-              : undefined,
-          disabledMonsters: getDisabledMonstersForSelect(
-            effect.effectId,
-            getPlayerState(ctx.gameState, ctx.ownerSide).monsters,
-          ),
+          constraint: { min: cappedCount, max: cappedCount },
+          kanjiFilter:
+            availableKanji.length > 0 && wildcard
+              ? [...availableKanji, wildcard]
+              : availableKanji,
+          actionLabel: '選択したカードを装備',
         };
       }
 
-      // sourceRestriction対応: 直前のステップ(sequence内)で実際に墓地送りにした
-      // カードのみを候補にする(方)。単発発動時はjustTrashedCardIdsがundefinedのため無制限。
+      // 【今回改訂・重大】monsterTargetMode指定時(兄・各・共・生・方)は、モンスター先選択
+      // (単一モンスター前提)を廃止し、「墓地カード×装備先スロット」のペアリングモーダルへ
+      // 一本化する。生(装備先を分散できる)がこの単一モンスター前提と食い違い、常に1体へ
+      // まとめて装備されてしまう不具合があったため。
+      const ownMonsters = getPlayerState(ctx.gameState, ctx.ownerSide).monsters;
+      const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
+      const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
       const restrictionFilter =
         effect.sourceRestriction === 'just_trashed_by_this_effect'
           ? ctx.justTrashedCardIds
           : undefined;
-
-      // 【追加】装備先モンスターの空きスロットに対応する漢字種類でも絞り込む
-      // (同種マナの空きが無いカードはそもそも装備できないため)
-      const targetMonsterIndex =
-        ctx.equipTargetMonsterIndex ?? ctx.sourceMonsterIndex;
-      const targetMonster =
-        targetMonsterIndex !== undefined
-          ? getPlayerState(ctx.gameState, ctx.ownerSide).monsters[
-              targetMonsterIndex
-            ]
+      const excludeIdx =
+        effect.monsterTargetMode === 'exclude_self'
+          ? ctx.sourceMonsterIndex
           : undefined;
-      const availableKanji = targetMonster
-        ? Array.from(new Set(getOpenSlotKanji(targetMonster)))
-        : undefined;
 
-      // 【追加】墓地の実際の対象カード枚数(スロット適合・sourceRestriction込み)で頭打ちにする
-      const cemetery = getPlayerState(ctx.gameState, ctx.ownerSide).cemetery;
-      const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
-      const eligibleCount = cemetery.filter((c) => {
+      const eligibleMonsters = ownMonsters
+        .map((m, i) => ({ m, i }))
+        .filter(({ i, m }) => i !== excludeIdx && !m.isRemovedFromGame);
+      const openKanjiSet = new Set<string>();
+      eligibleMonsters.forEach(({ m }) =>
+        getOpenSlotKanji(m).forEach((k) => openKanjiSet.add(k)),
+      );
+      const openKanjiList = Array.from(openKanjiSet);
+
+      const eligibleCards = cemetery.filter((c) => {
         if (restrictionFilter && !restrictionFilter.includes(c.id))
           return false;
-        if (availableKanji && !canFillOpenSlot(c, availableKanji, wildcard))
-          return false;
-        return true;
-      }).length;
-      const cappedCount = Math.min(effect.count, eligibleCount);
-      if (cappedCount === 0) return null; // 装備できる候補が無ければ効果不発
+        return canFillOpenSlot(c, openKanjiList, wildcard);
+      });
+      const cappedCount = Math.min(effect.count, eligibleCards.length);
+      if (cappedCount === 0) return null;
 
       return {
-        kind: 'graveyard_select',
+        kind: 'graveyard_equip_select',
         side: ctx.ownerSide,
-        constraint: { min: cappedCount, max: cappedCount },
+        pairCount: cappedCount,
         kanjiFilter:
-          availableKanji && wildcard && availableKanji.length > 0
-            ? [...availableKanji, wildcard]
-            : availableKanji,
+          openKanjiList.length > 0 && wildcard
+            ? [...openKanjiList, wildcard]
+            : openKanjiList,
         cardIdFilter: restrictionFilter,
-        actionLabel: '選択したカードを装備',
+        excludeMonsterIndex: excludeIdx,
+        disabledMonsters: getDisabledMonstersForSelect(
+          effect.effectId,
+          ownMonsters,
+        ),
+        singleMonster: effect.singleTargetMonster,
       };
     }
 
@@ -744,6 +780,18 @@ export function describeSelectionRequirement(
     case 'deck_predict_full_composition_win':
       return { kind: 'deck_composition_predict' };
 
+    // 【追加】方: 山札の上から1枚ずつ公開しながら、送るか止めるかを決める。
+    case 'deck_iterative_select_trash': {
+      const side = resolveSide(effect.targetSide, ctx.ownerSide);
+      const deck = getPlayerState(ctx.gameState, side).deck;
+      if (deck.length === 0) return null; // 山札が空なら発動不可
+      return {
+        kind: 'deck_iterative_select',
+        side,
+        maxCount: effect.maxCount,
+        sentCount: 0, // 2巡目以降はuseEffectExecutor.ts側で直接次のrequirementを組み立てる
+      };
+    }
     // ============ 見送り: 該当カードなし（旧・詳/美のみで、今回対応済み） ============
 
     // ============ そもそも選択不要(resolveMonsterEffectで自動解決されるはずの効果) ============
@@ -831,8 +879,14 @@ export type EffectSelectionAnswer =
   // 【追加】国: 選ばれた対象(自分/相手×山札/墓地)のindex(0〜3、順序はdescribeSelectionRequirement
   // のoptionsと同じ固定順)を返す
   | { kind: 'zone_target_select'; selectedIndex: number }
+  | {
+      // 【追加】
+      kind: 'graveyard_equip_select';
+      pairs: { cardId: string; monsterIndex: number; slotIndex: number }[];
+    }
   // 【追加】究: 申告した山札構成(漢字→枚数のマップ。0枚の種類はキー自体を含めなくてよい)を返す
-  | { kind: 'deck_composition_predict'; composition: Record<string, number> };
+  | { kind: 'deck_composition_predict'; composition: Record<string, number> }
+  | { kind: 'deck_iterative_select'; action: 'stop' | 'continue' };
 
 /**
  * describeSelectionRequirementで示した内容に対する回答(answer)を受けて、
@@ -865,6 +919,14 @@ export function buildActionsFromSelection(
             cardIds: answer.selectedCardIds,
             sourceZone: 'deck',
             targetZone: effect.destination,
+            // 【今回追加・横展開】化(graveyard_recover_then_deck_trash_matching_count)で
+            // 発見した「永続パッシブ割り込みパイプラインがcardIdsを無視し山札の上からN枚に
+            // 作り直す」問題への対応。deck_select_trashは山札から任意の(非連続な)カードを
+            // 自由選択する効果のため、選択結果をpreferredCardIdsとして明示的に優先採用させる。
+            // 単発発動(負・吐・探・正)・sequence内のstep1(識・生・方)いずれもこのcaseを
+            // 経由するため、7体全てに一括で波及する。amountが選択枚数を上回る場合(boost等で
+            // 増えた場合)は、buildDeckReduceAction側で不足分を山札上部から自動補完する。
+            preferredCardIds: answer.selectedCardIds,
           },
         },
       ];
@@ -997,20 +1059,33 @@ export function buildActionsFromSelection(
     }
 
     case 'graveyard_select_equip': {
-      if (answer.kind !== 'graveyard_select') return null;
-      // 【追加】phase1(monster_select)で装備先が選ばれていればそちらを優先。
-      // excludeSelfを使わない既存3件はctx.equipTargetMonsterIndexが常にundefinedのため
-      // 従来通りsourceMonsterIndex(発動元自身)が装備先になる。
-      const targetMonsterIndex =
-        ctx.equipTargetMonsterIndex ?? ctx.sourceMonsterIndex;
-      if (targetMonsterIndex === undefined) return null;
-      return answer.selectedCardIds.map((cardId) => ({
+      // monsterTargetMode未指定(現状該当カード無し): 従来通り発動元自身へ固定装備。
+      if (!effect.monsterTargetMode) {
+        if (answer.kind !== 'graveyard_select') return null;
+        if (ctx.sourceMonsterIndex === undefined) return null;
+        return answer.selectedCardIds.map((cardId) => ({
+          type: 'EQUIP_SPECIFIC_MANA',
+          payload: {
+            side: ctx.ownerSide,
+            monsterIndex: ctx.sourceMonsterIndex!,
+            sourceZone: 'cemetery',
+            manaCardId: cardId,
+          },
+        }));
+      }
+      // 【今回改訂】ペアリングモーダルの回答から、カードごとに装備先(monsterIndex・
+      // slotIndex)を直接指定してEQUIP_SPECIFIC_MANAを組み立てる。targetSlotIndexを
+      // 明示するため、reducer側の「同じ漢字の空きスロット優先」フォールバックには
+      // 委ねない(ペアリング時点でスロット単位の対応関係が確定しているため)。
+      if (answer.kind !== 'graveyard_equip_select') return null;
+      return answer.pairs.map(({ cardId, monsterIndex, slotIndex }) => ({
         type: 'EQUIP_SPECIFIC_MANA',
         payload: {
           side: ctx.ownerSide,
-          monsterIndex: targetMonsterIndex,
+          monsterIndex,
           sourceZone: 'cemetery',
           manaCardId: cardId,
+          targetSlotIndex: slotIndex,
         },
       }));
     }
@@ -1219,7 +1294,9 @@ export function buildActionsFromSelection(
       const wildcard = getWildcardKanji(ctx.gameState, ctx.ownerSide);
       requiredKanji.forEach((kanji) => {
         // 同じ色のマナを優先し、無ければ(花が表向きなら)万能マナ(屮)で代用する
-        let cardIndex = cemetery.findIndex((c) => getEffectiveKanji(c) === kanji);
+        let cardIndex = cemetery.findIndex(
+          (c) => getEffectiveKanji(c) === kanji,
+        );
         if (cardIndex === -1 && wildcard) {
           cardIndex = cemetery.findIndex((c) => c.kanji === wildcard);
         }
@@ -1606,6 +1683,11 @@ export function buildActionsFromSelection(
       }
       return [];
     }
+
+    case 'deck_iterative_select_trash':
+      // 【追加・方】選択のたびに1枚ずつ即時dispatchするため、useEffectExecutor.ts側の
+      // confirmSelection内の特別分岐で完結する(ここには到達しない)。型の受け皿。
+      return null;
 
     // それ以外は今回未実装。describeSelectionRequirement側で既にnullを返しているため
     // ここに到達すること自体が想定外だが、念のため網羅させておく。

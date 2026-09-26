@@ -524,7 +524,15 @@ export function applyDeckReducePassives(
     }
 
     let targetSide = intent.targetSide;
-    let amount = intent.amount + sumBoostAmount(gameState, actingSide);
+    // 【今回改訂・重大】原文「あいての山札をへらすとき」に従い、boost(重・伸)は転嫁前の
+    // 元の対象(intent.targetSide)が相手側の場合のみ適用する。従来はtargetSideを問わず
+    // 無条件で加算しており、自分自身の山札を減らす効果(負・吐・生・方のstep1、化の墓地送り、
+    // 或の超過分送り等)にも重・伸が誤って乗ってしまっていた。
+    let amount =
+      intent.amount +
+      (intent.targetSide !== actingSide
+        ? sumBoostAmount(gameState, actingSide)
+        : 0);
     let currentActingSide = actingSide;
     let blockedOrShielded = false;
 
@@ -1606,15 +1614,23 @@ export function resolveMonsterEffect(
       const drawCount = Math.min(effect.count, available);
       if (drawCount === 0) return [];
       const shortage = effect.count - drawCount;
-      const draws = Array.from({ length: drawCount }, (_, i): GameAction => ({
-        type: 'AUTO_DRAW',
-        payload: {
-          player: ownerSide,
-          ...(i === drawCount - 1 && shortage > 0
-            ? { remainingDrawsAfter: { count: shortage, kind: 'effect' as const } }
-            : {}),
-        },
-      }));
+      const draws = Array.from(
+        { length: drawCount },
+        (_, i): GameAction => ({
+          type: 'AUTO_DRAW',
+          payload: {
+            player: ownerSide,
+            ...(i === drawCount - 1 && shortage > 0
+              ? {
+                  remainingDrawsAfter: {
+                    count: shortage,
+                    kind: 'effect' as const,
+                  },
+                }
+              : {}),
+          },
+        }),
+      );
       // 【今回追加・星】走のめくりも「山札をひく」として星の反応を判定する(忍のトラップと
       // 同じ扱い)。山札減少はdispatchWithPassivesが通すapplyDeckReducePassivesで軽減・ブロック
       // 等が適用される。流は予想の入力が必要なため走のめくりには適用しない(既知の限界)。
@@ -1622,7 +1638,10 @@ export function resolveMonsterEffect(
         getPlayerState(gameState, ownerSide).deck,
         drawCount,
       ).map((c) => getEffectiveKanji(c));
-      return [...draws, ...getStarReactionActions(gameState, ownerSide, drawnKanji)];
+      return [
+        ...draws,
+        ...getStarReactionActions(gameState, ownerSide, drawnKanji),
+      ];
     }
 
     case 'swap_deck_and_graveyard': {
@@ -1831,6 +1850,7 @@ export function resolveMonsterEffect(
     case 'graveyard_select_equip':
     case 'deck_select_equip':
     case 'deck_kanji_purge':
+    case 'deck_iterative_select_trash':
     case 'deck_full_reorder':
     case 'choose_number_reduce_both':
     case 'choose_number_reduce':

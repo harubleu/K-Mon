@@ -35,6 +35,10 @@ export type MonsterEffect =
       // 'include_self': 装備先を選べる。発動元自身も選択可(兄)
       monsterTargetMode?: 'exclude_self' | 'include_self';
       sourceRestriction?: 'just_trashed_by_this_effect';
+      // 【今回追加・方】trueの場合、選んだ全カードを同一の1体のモンスターへまとめて
+      // 装備する(原文「モンスター1体につける」)。未指定(false)は生と同じ、カードごとに
+      // 個別のモンスターへ装備先を選べる挙動(原文に「1体」の限定が無いため)。
+      singleTargetMonster?: boolean;
     }
   | {
       effectId: 'deck_select_equip';
@@ -265,7 +269,17 @@ export type MonsterEffect =
   // 混入したカード実体にseededByタグを付け、own_turn_startパイプライン側で
   // 「相手の墓地にそのカードがあるか」を毎自ターン開始時チェックし続ける(要:勝敗システム接続)。
   // custom→専用effectIdへ昇格。
-  | { effectId: 'deck_seed_mana_win_condition'; maxCount: number };
+  | { effectId: 'deck_seed_mana_win_condition'; maxCount: number }
+  // 【追加】方(m00121)で確認：山札の上から1枚ずつめくり、その都度「送って終わりにする」か
+  // 「送ってもう1枚めくる」かを選ばせる。原文「1まいずつ...4まいまでの好きな枚数を墓地へおくる」
+  // に対応。deck_select_trash(任意の非連続カードを自由選択)とは異なり、常に山札の一番上から
+  // 順に、公開しながら1枚ずつ決める点が異なるため専用effectIdとして新設した。
+  | {
+      effectId: 'deck_iterative_select_trash';
+      targetSide: RelativeSide;
+      maxCount: number;
+      destination: 'cemetery' | 'exile';
+    };
 
 // --- 永続効果（表向き固定、盤面に残り続けて以後の処理に割り込む） ---
 export type PassiveEffect =
